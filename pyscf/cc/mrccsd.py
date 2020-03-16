@@ -518,8 +518,20 @@ def update_amps(cc, t1, t2, eris, denom=None):
     u2aa = u2aa - u2aa.transpose(1,0,2,3)
     u2bb = u2bb - u2bb.transpose(0,1,3,2)
     u2bb = u2bb - u2bb.transpose(1,0,2,3)
+
+    eia_a = lib.direct_sum('i-a->ia', mo_ea_o, mo_ea_v)
+    eia_b = lib.direct_sum('i-a->ia', mo_eb_o, mo_eb_v)
+    u1a /= eia_a
+    u1b /= eia_b
+
+    u2aa /= lib.direct_sum('ia+jb->ijab', eia_a, eia_a)
+    u2ab /= lib.direct_sum('ia+jb->ijab', eia_a, eia_b)
+    u2bb /= lib.direct_sum('ia+jb->ijab', eia_b, eia_b)
+
     time0 = log.timer_debug1('update t1 t2', *time0)
-    return (u1a, u1b), (u2aa, u2ab, u2bb)
+    t1new = u1a, u1b
+    t2new = u2aa, u2ab, u2bb
+    return t1new, t2new
 
 def kernel(cc, eris=None, t1=None, t2=None, denom=None, mbpt2=False, beta=-1.0, dt=None):
     max_cycle = cc.max_cycle
@@ -558,6 +570,21 @@ def kernel(cc, eris=None, t1=None, t2=None, denom=None, mbpt2=False, beta=-1.0, 
     eijab_aa = lib.direct_sum('ia+jb->ijab', eia_a, eia_a)
     eijab_ab = lib.direct_sum('ia+jb->ijab', eia_a, eia_b)
     eijab_bb = lib.direct_sum('ia+jb->ijab', eia_b, eia_b)
+    if beta < 0.0 and dt > 0.99:
+        eia_a = np.ones_like(eia_a)
+        eia_b = np.ones_like(eia_b)
+        eijab_aa = np.ones_like(eijab_aa)
+        eijab_ab = np.ones_like(eijab_ab)
+        eijab_bb = np.ones_like(eijab_bb)
+    else:
+        eia_a *= -dt
+        eia_b *= -dt
+        eijab_aa *= -dt
+        eijab_ab *= -dt
+        eijab_bb *= -dt
+    noa, nob, nva, nvb = eijab_ab.shape
+    nmo = noa + nva, nob + nvb
+    nocc = noa, nob
 
     cput1 = cput0 = (time.clock(), time.time())
     eold = 0
@@ -565,75 +592,50 @@ def kernel(cc, eris=None, t1=None, t2=None, denom=None, mbpt2=False, beta=-1.0, 
     eccsd = cc.energy(t1, t2, eris)
     log.info('Init E(CCSD) = %.15g', eccsd)
 
-    if beta < 0.0:
-        if isinstance(cc.diis, lib.diis.DIIS):
-            adiis = cc.diis
-        elif cc.diis:
-            adiis = lib.diis.DIIS(cc, cc.diis_file, incore=cc.incore_complete)
-            adiis.space = cc.diis_space
-        else:
-            adiis = None
-    
-        for istep in range(max_cycle):
-            u1, u2 = update_amps(cc, t1, t2, eris, denom) # residue
-            u1a, u1b = u1
-            u2aa, u2ab, u2bb = u2
-            t1a = u1a / eia_a
-            t1b = u1b / eia_b
-            t2aa = u2aa / eijab_aa
-            t2ab = u2ab / eijab_ab
-            t2bb = u2bb / eijab_bb
-            t1new = t1a, t1b
-            t2new = t2aa, t2ab, t2bb            
-
-            normt = np.linalg.norm(cc.amplitudes_to_vector(t1new, t2new) -
-                                   cc.amplitudes_to_vector(t1, t2))
-            if cc.iterative_damping < 1.0:
-                alpha = cc.iterative_damping
-                t1new = (1-alpha) * t1 + alpha * t1new
-                t2new *= alpha
-                t2new += (1-alpha) * t2
-            t1, t2 = t1new, t2new
-            t1new = t2new = None
-            t1, t2 = cc.run_diis(t1, t2, istep, normt, eccsd-eold, adiis)
-            eold, eccsd = eccsd, cc.energy(t1, t2, eris)
-            log.info('cycle = %d  E(CCSD) = %.15g  dE = %.9g  norm(t1,t2) = %.6g',
-                     istep+1, eccsd, eccsd - eold, normt)
-            cput1 = log.timer('CCSD iter', *cput1)
-            if abs(eccsd) > 10.0:
-                break
-            if abs(eccsd-eold) < tol and normt < tolnormt:
-                conv = True
-                break
+    if isinstance(cc.diis, lib.diis.DIIS):
+        adiis = cc.diis
+    elif cc.diis:
+        adiis = lib.diis.DIIS(cc, cc.diis_file, incore=cc.incore_complete)
+        adiis.space = cc.diis_space
     else:
-        for tau in np.arange(0.0, beta, dt):
-            u1, u2 = update_amps(cc, t1, t2, eris, denom) # residue
-            u1a, u1b = u1
-            u2aa, u2ab, u2bb = u2
-            t1a, t1b = t1
-            t2aa, t2ab, t2bb = t2
-            t1a_new = t1a + dt*(np.multiply(eia_a,t1a) - u1a)
-            t1b_new = t1b + dt*(np.multiply(eia_b,t1b) - u1b)
-            t2aa_new = t2aa + dt*(np.multiply(eijab_aa,t2aa) - u2aa)
-            t2ab_new = t2ab + dt*(np.multiply(eijab_ab,t2ab) - u2ab)
-            t2bb_new = t2bb + dt*(np.multiply(eijab_bb,t2bb) - u2bb)
-            t1new = t1a_new, t1b_new
-            t2new = t2aa_new, t2ab_new, t2bb_new            
+        adiis = None
+    
+    steps = range(max_cycle) if beta < 0.0 else np.arange(0.0, beta, dt)
+    for istep in steps:
+        t1new, t2new = update_amps(cc, t1, t2, eris, denom)
+        normt = np.linalg.norm(cc.amplitudes_to_vector(t1new, t2new) -
+                               cc.amplitudes_to_vector(t1, t2))
 
-            normt = np.linalg.norm(cc.amplitudes_to_vector(t1new, t2new) -
-                                   cc.amplitudes_to_vector(t1, t2))
-            t1, t2 = t1new, t2new
-            t1new = t2new = None
-            eold, eccsd = eccsd, cc.energy(t1, t2, eris)
-            log.info('tau = %.4g  E(CCSD) = %.15g  dE = %.9g  norm(t1,t2) = %.6g',
-                     tau, eccsd, eccsd - eold, normt)
-            cput1 = log.timer('CCSD iter', *cput1)
-            if abs(eccsd) > 10.0:
-                break
-            if abs(eccsd-eold) < tol and normt < tolnormt:
-                conv = True
-                beta = tau
-                break
+        e1 = eia_a, eia_b
+        e2 = eijab_aa, eijab_ab, eijab_bb
+#        e = cc.amplitudes_to_vector(e1,e2)
+#        e[e>1.0] = 1.0
+#        e1, e2 = uccsd.vector_to_amplitudes(e, nmo, nocc)
+        t1new_a = t1[0] + np.multiply(e1[0], t1new[0]-t1[0])
+        t1new_b = t1[1] + np.multiply(e1[1], t1new[1]-t1[1])
+        t2new_aa = t2[0] + np.multiply(e2[0], t2new[0]-t2[0])
+        t2new_ab = t2[1] + np.multiply(e2[1], t2new[1]-t2[1])
+        t2new_bb = t2[2] + np.multiply(e2[2], t2new[2]-t2[2])
+
+        t1 = t1new_a, t1new_b
+        t2 = t2new_aa, t2new_ab, t2new_bb 
+        t1new = t2new = None
+        if beta < 0.0 and normt < 0.05:
+            t1, t2 = cc.run_diis(t1, t2, istep, normt, eccsd-eold, adiis)
+        eold, eccsd = eccsd, cc.energy(t1, t2, eris)
+        if beta < 0.0:
+            log.info('cycle = %d  E(CCSD) = %.15g  dE = %.9g  norm(t1,t2) = %.6g',
+                     istep, eccsd, eccsd - eold, normt)
+        else:
+            log.info('cycle = %.2g  E(CCSD) = %.15g  dE = %.9g  norm(t1,t2) = %.6g',
+                     istep, eccsd, eccsd - eold, normt)
+        cput1 = log.timer('CCSD iter', *cput1)
+        if abs(eccsd) > 10.0:
+            break
+        if abs(eccsd-eold) < tol and normt < tolnormt:
+            conv = True
+            beta = istep if beta > 0.0 else beta
+            break
     log.timer('CCSD', *cput0)
 
     cc.converged = conv
@@ -702,7 +704,7 @@ class MRCCSD(ccsd.CCSD):
                  ncas=None, nelecas=None, 
                  occslst=None, 
                  ci=None, ndet=None, cutoff=None, 
-                 frozen=0, beta=-1.0, dt=None):
+                 frozen=0, beta=-1.0, dt=1.0):
 
         nea, neb = mf.mol.nelec
         moa, mob = mf.mo_coeff
@@ -732,8 +734,6 @@ class MRCCSD(ccsd.CCSD):
         self.t2bb = np.zeros((ndet, nob, nob, nvb, nvb))
 
         self.cc = uccsd.UCCSD(mf, frozen)
-#        self.cc.diis_space = 10
-#        self.cc.iterative_damping = 0.3
 
     def kernel(self, H=None, S=None, H_=None, S_=None):
         enuc = self.cc._scf.mol.energy_nuc()
@@ -755,7 +755,7 @@ class MRCCSD(ccsd.CCSD):
         idx = np.argsort(w.real) 
         w, v = w[idx], v[:, idx]
 
-        self.etot = w.real[0] + enuc()
+        self.etot = w.real[0] + enuc
         self.vact = v.real[:,0]
         np.set_printoptions(precision=20,suppress=True)
         print('MRCCSD ground state energy: {}'.format(self.etot))
@@ -769,15 +769,6 @@ class MRCCSD(ccsd.CCSD):
         div = []
         for I in range(ndet):
             print('\nreference {} occupation: {}'.format(I, self.occ[I,:]))
-
-#            Ia, Ib = np.hsplit(self.occ[I,:],2)
-#            nmo = self.cc._scf.mo_coeff[0].shape[1]
-#            occa = np.zeros(nmo)
-#            occb = np.zeros(nmo)
-#            occa[Ia] = 1.0
-#            occb[Ib] = 1.0
-#            self.cc.mo_occ = occa, occb
-#            self.cc.kernel()
             mo_coeff, self.occ[I,:], self.vir[I,:] = \
                 perm_mo(self.cc._scf, self.mo0, self.occ[I,:])
             self.cc.mo_coeff = self.cc._scf.mo_coeff = mo_coeff
