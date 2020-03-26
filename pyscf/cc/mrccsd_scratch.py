@@ -286,3 +286,24 @@ def regularizer(reg):
 #        eijab_bb = reg(eijab_bb)
 #    return (eia_a,eia_b,eijab_aa,eijab_ab,eijab_bb)
 
+def update_amps(cc, t1, t2, eris, e1, e2, method):
+    if method == 'ccsd':
+        t1new, t2new = uccsd.update_amps(cc, t1, t2, eris)
+    if method == 'cisd':
+        t1, t2 = make_ci(t1, t2)
+        t1new, t2new = update_ci(cc, t1, t2, eris)
+        e0 = cc._scf.e_tot
+        t1a = np.multiply(t1[0], e0*np.ones_like(e1[0])/e1[0]+1.0)
+        t1b = np.multiply(t1[1], e0*np.ones_like(e1[1])/e1[1]+1.0)
+        t2aa = np.multiply(t2[0], e0*np.ones_like(e2[0])/e2[0]+1.0)
+        t2ab = np.multiply(t2[1], e0*np.ones_like(e2[1])/e2[1]+1.0)
+        t2bb = np.multiply(t2[2], e0*np.ones_like(e2[2])/e2[2]+1.0)
+        t1, t2 = (t1a, t1b), (t2aa, t2ab, t2bb)
+
+    dt1a = np.multiply(e1[0], t1new[0]-t1[0])
+    dt1b = np.multiply(e1[1], t1new[1]-t1[1])
+    dt2aa = np.multiply(e2[0], t2new[0]-t2[0])
+    dt2ab = np.multiply(e2[1], t2new[1]-t2[1])
+    dt2bb = np.multiply(e2[2], t2new[2]-t2[2])
+    return (dt1a, dt1b), (dt2aa, dt2ab, dt2bb)
+
