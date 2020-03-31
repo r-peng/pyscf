@@ -307,3 +307,212 @@ def update_amps(cc, t1, t2, eris, e1, e2, method):
     dt2bb = np.multiply(e2[2], t2new[2]-t2[2])
     return (dt1a, dt1b), (dt2aa, dt2ab, dt2bb)
 
+def update_ci(cc, t1, t2, eris):
+    time0 = time.clock(), time.time()
+    log = logger.Logger(cc.stdout, cc.verbose)
+    t1a, t1b = t1
+    t2aa, t2ab, t2bb = t2
+    nocca, noccb, nvira, nvirb = t2ab.shape
+    fova = eris.focka[:nocca,nocca:]
+    fovb = eris.fockb[:noccb,noccb:]
+
+    u1a = np.zeros_like(t1a)
+    u1b = np.zeros_like(t1b)
+    #:eris_vvvv = ao2mo.restore(1, np.asarray(eris.vvvv), nvirb)
+    #:eris_VVVV = ao2mo.restore(1, np.asarray(eris.VVVV), nvirb)
+    #:eris_vvVV = _restore(np.asarray(eris.vvVV), nvira, nvirb)
+    #:u2aa += lib.einsum('ijef,aebf->ijab', tauaa, eris_vvvv) * .5
+    #:u2bb += lib.einsum('ijef,aebf->ijab', taubb, eris_VVVV) * .5
+    #:u2ab += lib.einsum('iJeF,aeBF->iJaB', tauab, eris_vvVV)
+    tauaa, tauab, taubb = t2
+    u2aa, u2ab, u2bb = cc._add_vvvv(None, (tauaa,tauab,taubb), eris)
+    u2aa *= .5
+    u2bb *= .5
+
+    Fooa = eris.focka[:nocca,:nocca]
+    Foob = eris.fockb[:noccb,:noccb]
+    Fvva = eris.focka[nocca:,nocca:]
+    Fvvb = eris.fockb[noccb:,noccb:]
+    dtype = u2aa.dtype
+    wovvo = np.zeros((nocca,nvira,nvira,nocca), dtype=dtype)
+    wOVVO = np.zeros((noccb,nvirb,nvirb,noccb), dtype=dtype)
+    woVvO = np.zeros((nocca,nvirb,nvira,noccb), dtype=dtype)
+    woVVo = np.zeros((nocca,nvirb,nvirb,nocca), dtype=dtype)
+    wOvVo = np.zeros((noccb,nvira,nvirb,nocca), dtype=dtype)
+    wOvvO = np.zeros((noccb,nvira,nvira,noccb), dtype=dtype)
+
+    mem_now = lib.current_memory()[0]
+    max_memory = max(0, cc.max_memory - mem_now - u2aa.size*8e-6)
+    if nvira > 0 and nocca > 0:
+        blksize = max(ccsd.BLKMIN, int(max_memory*1e6/8/(nvira**3*3+1)))
+        for p0,p1 in lib.prange(0, nocca, blksize):
+            ovvv = eris.get_ovvv(slice(p0,p1))  # ovvv = eris.ovvv[p0:p1]
+            ovvv = ovvv - ovvv.transpose(0,3,2,1)
+            u1a += 0.5*lib.einsum('mief,meaf->ia', t2aa[p0:p1], ovvv)
+            u2aa[:,p0:p1] += lib.einsum('ie,mbea->imab', t1a, ovvv.conj())
+            ovvv = tmp1aa = None
+
+    if nvirb > 0 and noccb > 0:
+        blksize = max(ccsd.BLKMIN, int(max_memory*1e6/8/(nvirb**3*3+1)))
+        for p0,p1 in lib.prange(0, noccb, blksize):
+            OVVV = eris.get_OVVV(slice(p0,p1))  # OVVV = eris.OVVV[p0:p1]
+            OVVV = OVVV - OVVV.transpose(0,3,2,1)
+            u1b += 0.5*lib.einsum('MIEF,MEAF->IA', t2bb[p0:p1], OVVV)
+            u2bb[:,p0:p1] += lib.einsum('ie,mbea->imab', t1b, OVVV.conj())
+            OVVV = tmp1bb = None
+
+    if nvirb > 0 and nocca > 0:
+        blksize = max(ccsd.BLKMIN, int(max_memory*1e6/8/(nvira*nvirb**2*3+1)))
+        for p0,p1 in lib.prange(0, nocca, blksize):
+            ovVV = eris.get_ovVV(slice(p0,p1))  # ovVV = eris.ovVV[p0:p1]
+            u1b += lib.einsum('mIeF,meAF->IA', t2ab[p0:p1], ovVV)
+            u2ab[p0:p1] += lib.einsum('IE,maEB->mIaB', t1b, ovVV.conj())
+            ovVV = tmp1ab = None
+
+    if nvira > 0 and noccb > 0:
+        blksize = max(ccsd.BLKMIN, int(max_memory*1e6/8/(nvirb*nvira**2*3+1)))
+        for p0,p1 in lib.prange(0, noccb, blksize):
+            OVvv = eris.get_OVvv(slice(p0,p1))  # OVvv = eris.OVvv[p0:p1]
+            u1a += lib.einsum('iMfE,MEaf->ia', t2ab[:,p0:p1], OVvv)
+            u2ab[:,p0:p1] += lib.einsum('ie,MBea->iMaB', t1a, OVvv.conj())
+            OVvv = tmp1abba = None
+
+    eris_ovov = np.asarray(eris.ovov)
+    eris_ovoo = np.asarray(eris.ovoo)
+    Woooo = np.asarray(eris.oooo).transpose(0,2,1,3)
+    u2aa += lib.einsum('mnab,mnij->ijab', tauaa, Woooo*.5)
+    Woooo = tauaa = None
+    ovoo = eris_ovoo - eris_ovoo.transpose(2,1,0,3)
+    u1a += 0.5*lib.einsum('mnae,meni->ia', t2aa, ovoo)
+    ovoo = eris_ovoo = None
+
+    ovov = eris_ovov - eris_ovov.transpose(0,3,2,1)
+    u2aa += ovov.conj().transpose(0,2,1,3) * .5
+    eirs_ovov = ovov = tmpaa = tilaa = None
+
+    eris_OVOV = np.asarray(eris.OVOV)
+    eris_OVOO = np.asarray(eris.OVOO)
+    WOOOO = np.asarray(eris.OOOO).transpose(0,2,1,3)
+    u2bb += lib.einsum('mnab,mnij->ijab', taubb, WOOOO*.5)
+    WOOOO = taubb = None
+    OVOO = eris_OVOO - eris_OVOO.transpose(2,1,0,3)
+    u1b += 0.5*lib.einsum('mnae,meni->ia', t2bb, OVOO)
+    OVOO = eris_OVOO = None
+
+    OVOV = eris_OVOV - eris_OVOV.transpose(0,3,2,1)
+    u2bb += OVOV.conj().transpose(0,2,1,3) * .5
+    eris_OVOV = OVOV = tmpbb = tilbb = None
+
+    eris_OVoo = np.asarray(eris.OVoo)
+    eris_ovOO = np.asarray(eris.ovOO)
+    u1a -= lib.einsum('nMaE,MEni->ia', t2ab, eris_OVoo)
+    u1b -= lib.einsum('mNeA,meNI->IA', t2ab, eris_ovOO)
+    WoOoO = np.asarray(eris.ooOO).transpose(0,2,1,3)
+    eris_OVoo = eris_ovOO = None
+
+    eris_ovOV = np.asarray(eris.ovOV)
+    u2ab += lib.einsum('mNaB,mNiJ->iJaB', tauab, WoOoO)
+    WoOoO = None
+
+    u2ab += eris_ovOV.conj().transpose(0,2,1,3)
+    tmpabab = tmpbaba = tilab = None
+
+    Fova = fova
+    Fovb = fovb
+    u1a += fova.conj()
+    u1a += np.einsum('ie,ae->ia', t1a, Fvva)
+    u1a -= np.einsum('ma,mi->ia', t1a, Fooa)
+    u1a -= np.einsum('imea,me->ia', t2aa, Fova)
+    u1a += np.einsum('iMaE,ME->ia', t2ab, Fovb)
+    u1b += fovb.conj()
+    u1b += np.einsum('ie,ae->ia',t1b,Fvvb)
+    u1b -= np.einsum('ma,mi->ia',t1b,Foob)
+    u1b -= np.einsum('imea,me->ia', t2bb, Fovb)
+    u1b += np.einsum('mIeA,me->IA', t2ab, Fova)
+
+    eris_oovv = np.asarray(eris.oovv)
+    eris_ovvo = np.asarray(eris.ovvo)
+    wovvo -= eris_oovv.transpose(0,2,3,1)
+    wovvo += eris_ovvo.transpose(0,2,1,3)
+    oovv = eris_oovv - eris_ovvo.transpose(0,3,2,1)
+    u1a-= np.einsum('nf,niaf->ia', t1a,      oovv)
+    eris_ovvo = eris_oovv = oovv = tmp1aa = None
+
+    eris_OOVV = np.asarray(eris.OOVV)
+    eris_OVVO = np.asarray(eris.OVVO)
+    wOVVO -= eris_OOVV.transpose(0,2,3,1)
+    wOVVO += eris_OVVO.transpose(0,2,1,3)
+    OOVV = eris_OOVV - eris_OVVO.transpose(0,3,2,1)
+    u1b-= np.einsum('nf,niaf->ia', t1b,      OOVV)
+    eris_OVVO = eris_OOVV = OOVV = None
+
+    eris_ooVV = np.asarray(eris.ooVV)
+    eris_ovVO = np.asarray(eris.ovVO)
+    woVVo -= eris_ooVV.transpose(0,2,3,1)
+    woVvO += eris_ovVO.transpose(0,2,1,3)
+    u1b+= np.einsum('nf,nfAI->IA', t1a, eris_ovVO)
+    eris_ooVV = eris_ovVo = tmp1ab = None
+
+    eris_OOvv = np.asarray(eris.OOvv)
+    eris_OVvo = np.asarray(eris.OVvo)
+    wOvvO -= eris_OOvv.transpose(0,2,3,1)
+    wOvVo += eris_OVvo.transpose(0,2,1,3)
+    u1a+= np.einsum('NF,NFai->ia', t1b, eris_OVvo)
+    eris_OOvv = eris_OVvO = tmp1ba = None
+
+    u2aa += 2*lib.einsum('imae,mbej->ijab', t2aa, wovvo)
+    u2aa += 2*lib.einsum('iMaE,MbEj->ijab', t2ab, wOvVo)
+    u2bb += 2*lib.einsum('imae,mbej->ijab', t2bb, wOVVO)
+    u2bb += 2*lib.einsum('mIeA,mBeJ->IJAB', t2ab, woVvO)
+    u2ab += lib.einsum('imae,mBeJ->iJaB', t2aa, woVvO)
+    u2ab += lib.einsum('iMaE,MBEJ->iJaB', t2ab, wOVVO)
+    u2ab += lib.einsum('iMeA,MbeJ->iJbA', t2ab, wOvvO)
+    u2ab += lib.einsum('IMAE,MbEj->jIbA', t2bb, wOvVo)
+    u2ab += lib.einsum('mIeA,mbej->jIbA', t2ab, wovvo)
+    u2ab += lib.einsum('mIaE,mBEj->jIaB', t2ab, woVVo)
+    wovvo = wOVVO = woVvO = wOvVo = woVVo = wOvvO = None
+
+    Ftmpa = Fvva.copy()
+    Ftmpb = Fvvb.copy()
+    u2aa += lib.einsum('ijae,be->ijab', t2aa, Ftmpa)
+    u2bb += lib.einsum('ijae,be->ijab', t2bb, Ftmpb)
+    u2ab += lib.einsum('iJaE,BE->iJaB', t2ab, Ftmpb)
+    u2ab += lib.einsum('iJeA,be->iJbA', t2ab, Ftmpa)
+    Ftmpa = Fooa.copy()
+    Ftmpb = Foob.copy()
+    u2aa -= lib.einsum('imab,mj->ijab', t2aa, Ftmpa)
+    u2bb -= lib.einsum('imab,mj->ijab', t2bb, Ftmpb)
+    u2ab -= lib.einsum('iMaB,MJ->iJaB', t2ab, Ftmpb)
+    u2ab -= lib.einsum('mIaB,mj->jIaB', t2ab, Ftmpa)
+
+    eris_ovoo = np.asarray(eris.ovoo).conj()
+    eris_OVOO = np.asarray(eris.OVOO).conj()
+    eris_OVoo = np.asarray(eris.OVoo).conj()
+    eris_ovOO = np.asarray(eris.ovOO).conj()
+    ovoo = eris_ovoo - eris_ovoo.transpose(2,1,0,3)
+    OVOO = eris_OVOO - eris_OVOO.transpose(2,1,0,3)
+    u2aa -= lib.einsum('ma,jbim->ijab', t1a, ovoo)
+    u2bb -= lib.einsum('ma,jbim->ijab', t1b, OVOO)
+    u2ab -= lib.einsum('ma,JBim->iJaB', t1a, eris_OVoo)
+    u2ab -= lib.einsum('MA,ibJM->iJbA', t1b, eris_ovOO)
+    eris_ovoo = eris_OVoo = eris_OVOO = eris_ovOO = None
+
+    u2aa *= .5
+    u2bb *= .5
+    u2aa = u2aa - u2aa.transpose(0,1,3,2)
+    u2aa = u2aa - u2aa.transpose(1,0,2,3)
+    u2bb = u2bb - u2bb.transpose(0,1,3,2)
+    u2bb = u2bb - u2bb.transpose(1,0,2,3)
+
+    e = energy_ci(t1, t2, eris)
+    u1a -= e * t1a
+    u1b -= e * t1b
+    u2aa -= e * t2aa
+    u2ab -= e * t2ab
+    u2bb -= e * t2bb
+
+    time0 = log.timer_debug1('update t1 t2', *time0)
+    t1new = -u1a, -u1b
+    t2new = -u2aa, -u2ab, -u2bb
+    return t1new, t2new
+
