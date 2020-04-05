@@ -516,3 +516,193 @@ def update_ci(cc, t1, t2, eris):
     t2new = -u2aa, -u2ab, -u2bb
     return t1new, t2new
 
+def update_ci(cc, t1, t2, eris):
+    time0 = time.clock(), time.time()
+    log = logger.Logger(cc.stdout, cc.verbose)
+
+    t1a, t1b = t1
+    t2aa, t2ab, t2bb = t2
+    nocca, noccb, nvira, nvirb = t2ab.shape
+    fova = eris.focka[:nocca,nocca:]
+    fovb = eris.fockb[:noccb,noccb:]
+    Fooa = eris.focka[:nocca,:nocca]
+    Foob = eris.fockb[:noccb,:noccb]
+    Fvva = eris.focka[nocca:,nocca:]
+    Fvvb = eris.fockb[noccb:,noccb:]
+
+    u1a = fova.copy()
+    u1a += einsum('ic,ac->ia',t1a,Fvva)
+    u1a -= einsum('ik,ka->ia',Fooa,t1a)
+    u1a += einsum('kcai,kc->ia',eris.ovvo,t1a)
+    u1a -= einsum('kiac,kc->ia',eris.oovv,t1a)
+    u1a += einsum('KCai,KC->ia',eris.OVvo,t1b)
+    u1a += einsum('kc,ikac->ia',fova,t2aa)
+    u1a += einsum('KC,iKaC->ia',fovb,t2ab)
+#    u1a += 0.5*einsum('kcad,kicd->ia',eris.ovvv,t2aa)
+#    u1a -= 0.5*einsum('kdac,kicd->ia',eris.ovvv,t2aa)
+#    u1a += einsum('KCad,iKdC->ia',eris.OVvv,t2ab)
+    mem_now = lib.current_memory()[0]
+    max_memory = max(0, cc.max_memory - mem_now - t2aa.size*8e-6)
+    if nvira > 0 and nocca > 0:
+        blksize = max(ccsd.BLKMIN, int(max_memory*1e6/8/(nvira**3*3+1)))
+        for p0,p1 in lib.prange(0, nocca, blksize):
+            ovvv = eris.get_ovvv(slice(p0,p1))  # ovvv = eris.ovvv[p0:p1]
+            ovvv = ovvv - ovvv.transpose(0,3,2,1)
+            u1a += 0.5*lib.einsum('kicd,kcad->ia', t2aa[p0:p1], ovvv)
+            ovvv = None
+    if nvira > 0 and noccb > 0:
+        blksize = max(ccsd.BLKMIN, int(max_memory*1e6/8/(nvirb*nvira**2*3+1)))
+        for p0,p1 in lib.prange(0, noccb, blksize):
+            OVvv = eris.get_OVvv(slice(p0,p1))  # OVvv = eris.OVvv[p0:p1]
+            u1a += lib.einsum('iKdC,KCad->ia', t2ab[:,p0:p1], OVvv)
+            OVvv = None
+    u1a -= 0.5*einsum('kcli,klca->ia',eris.ovoo,t2aa)
+    u1a += 0.5*einsum('lcki,klca->ia',eris.ovoo,t2aa)
+    u1a -= einsum('KCli,lKaC->ia',eris.OVoo,t2ab)
+
+    u1b = fovb.copy()
+    u1b += einsum('IC,AC->IA',t1b,Fvvb)
+    u1b -= einsum('IK,KA->IA',Foob,t1b)
+    u1b += einsum('KCAI,KC->IA',eris.OVVO,t1b)
+    u1b -= einsum('KIAC,KC->IA',eris.OOVV,t1b)
+    u1b += einsum('kcAI,kc->IA',eris.ovVO,t1a)
+    u1b += einsum('KC,IKAC->IA',fovb,t2bb)
+    u1b += einsum('kc,kIcA->IA',fova,t2ab)
+#    u1b += 0.5*einsum('KCAD,KICD->IA',eris.OVVV,t2bb)
+#    u1b -= 0.5*einsum('KDAC,KICD->IA',eris.OVVV,t2bb)
+#    u1b += einsum('kcAD,kIcD->IA',eris.ovVV,t2ab)
+    if nvirb > 0 and noccb > 0:
+        blksize = max(ccsd.BLKMIN, int(max_memory*1e6/8/(nvirb**3*3+1)))
+        for p0,p1 in lib.prange(0, noccb, blksize):
+            OVVV = eris.get_OVVV(slice(p0,p1))  # OVVV = eris.OVVV[p0:p1]
+            OVVV = OVVV - OVVV.transpose(0,3,2,1)
+            u1b += 0.5*lib.einsum('KICD,KCAD->IA', t2bb[p0:p1], OVVV)
+            OVVV = None
+    if nvirb > 0 and nocca > 0:
+        blksize = max(ccsd.BLKMIN, int(max_memory*1e6/8/(nvira*nvirb**2*3+1)))
+        for p0,p1 in lib.prange(0, nocca, blksize):
+            ovVV = eris.get_ovVV(slice(p0,p1))  # ovVV = eris.ovVV[p0:p1]
+            u1b += lib.einsum('kIcD,kcAD->IA', t2ab[p0:p1], ovVV)
+            ovVV = None
+    u1b -= 0.5*einsum('KCLI,KLCA->IA',eris.OVOO,t2bb)
+    u1b += 0.5*einsum('LCKI,KLCA->IA',eris.OVOO,t2bb)
+    u1b -= einsum('kcLI,kLcA->IA',eris.ovOO,t2ab)
+
+    u2aa, u2ab, u2bb = cc._add_vvvv(None, t2, eris)
+    u2aa *= 0.5
+    u2bb *= 0.5
+    u2aa -= u2aa.transpose(0,1,3,2)
+    u2bb -= u2bb.transpose(0,1,3,2)
+
+    u2aa += eris.ovov.transpose(0,2,1,3) - eris.ovov.transpose(0,2,3,1) 
+    u2aa += einsum('bc,ijac->ijab',Fvva,t2aa)
+    u2aa += einsum('ac,ijcb->ijab',Fvva,t2aa)
+    u2aa -= einsum('kj,ikab->ijab',Fooa,t2aa)
+    u2aa -= einsum('ki,kjab->ijab',Fooa,t2aa)
+    u2aa += 0.5*einsum('kilj,klab->ijab',eris.oooo,t2aa)
+    u2aa -= 0.5*einsum('kjli,klab->ijab',eris.oooo,t2aa)
+#    u2aa += 0.5*einsum('acbd,ijcd->ijab',eris.vvvv,t2aa)
+#    u2aa -= 0.5*einsum('adbc,ijcd->ijab',eris.vvvv,t2aa)
+    temp  = einsum('kcbj,ikac->ijab',eris.ovvo,t2aa)
+    temp -= einsum('kjbc,ikac->ijab',eris.oovv,t2aa)
+    temp += einsum('KCbj,iKaC->ijab',eris.OVvo,t2ab)
+    temp -= temp.transpose(1,0,2,3)
+    temp -= temp.transpose(0,1,3,2)
+    u2aa += temp
+    if nvira > 0 and nocca > 0:
+        blksize = max(ccsd.BLKMIN, int(max_memory*1e6/8/(nvira**3*3+1)))
+        for p0,p1 in lib.prange(0, nocca, blksize):
+            ovvv = eris.get_ovvv(slice(p0,p1))  # ovvv = eris.ovvv[p0:p1]
+            temp  = einsum('jbca,ic->ijab',ovvv,t1a)
+            temp -= einsum('jacb,ic->ijab',ovvv,t1a) 
+            temp -= temp.transpose(1,0,2,3)
+            u2aa[:,p0:p1] += temp
+            ovvv = temp = None
+    temp  = einsum('jbik,ka->ijab',eris.ovoo,t1a)
+    temp -= einsum('ibjk,ka->ijab',eris.ovoo,t1a)
+    temp -= temp.transpose(0,1,3,2)
+    u2aa -= temp
+    # disconnected term
+    temp = einsum('ia,jb->ijab',fova,t1a)
+    temp -= temp.transpose(1,0,2,3)
+    temp -= temp.transpose(0,1,3,2)
+    u2aa += temp
+
+    u2bb += eris.OVOV.transpose(0,2,1,3) - eris.OVOV.transpose(0,2,3,1) 
+    u2bb += einsum('BC,IJAC->IJAB',Fvvb,t2bb)
+    u2bb += einsum('AC,IJCB->IJAB',Fvvb,t2bb)
+    u2bb -= einsum('KJ,IKAB->IJAB',Foob,t2bb)
+    u2bb -= einsum('KI,KJAB->IJAB',Foob,t2bb)
+    u2bb += 0.5*einsum('KILJ,KLAB->IJAB',eris.OOOO,t2bb)
+    u2bb -= 0.5*einsum('KJLI,KLAB->IJAB',eris.OOOO,t2bb)
+#    u2bb += 0.5*einsum('ACBD,IJCD->IJAB',eris.VVVV,t2bb)
+#    u2bb -= 0.5*einsum('ADBC,IJCD->IJAB',eris.VVVV,t2bb)
+    temp  = einsum('KCBJ,IKAC->IJAB',eris.OVVO,t2bb)
+    temp -= einsum('KJBC,IKAC->IJAB',eris.OOVV,t2bb)
+    temp += einsum('kcBJ,kIcA->IJAB',eris.ovVO,t2ab)
+    temp -= temp.transpose(1,0,2,3)
+    temp -= temp.transpose(0,1,3,2)
+    u2bb += temp
+    if nvirb > 0 and noccb > 0:
+        blksize = max(ccsd.BLKMIN, int(max_memory*1e6/8/(nvirb**3*3+1)))
+        for p0,p1 in lib.prange(0, noccb, blksize):
+            OVVV = eris.get_OVVV(slice(p0,p1))  # OVVV = eris.OVVV[p0:p1]
+            temp  = einsum('JBCA,IC->IJAB',OVVV,t1b)
+            temp -= einsum('JACB,IC->IJAB',OVVV,t1b) 
+            temp -= temp.transpose(1,0,2,3)
+            u2bb[:,p0:p1] += temp
+            OVVV = temp = None
+    temp  = einsum('JBIK,KA->IJAB',eris.OVOO,t1b)
+    temp -= einsum('IBJK,KA->IJAB',eris.OVOO,t1b)
+    temp -= temp.transpose(0,1,3,2)
+    u2bb -= temp
+    # disconnected term
+    temp = einsum('IA,JB->IJAB',fovb,t1b)
+    temp -= temp.transpose(1,0,2,3)
+    temp -= temp.transpose(0,1,3,2)
+    u2bb += temp
+
+    u2ab += eris.ovOV.transpose(0,2,1,3)
+    u2ab += einsum('BC,iJaC->iJaB',Fvvb,t2ab)
+    u2ab += einsum('ac,iJcB->iJaB',Fvva,t2ab)
+    u2ab -= einsum('KJ,iKaB->iJaB',Foob,t2ab)
+    u2ab -= einsum('ki,kJaB->iJaB',Fooa,t2ab)
+    u2ab += einsum('kiLJ,kLaB->iJaB',eris.ooOO,t2ab)
+#    u2ab += einsum('acBD,iJcD->iJaB',eris.vvVV,t2ab)
+    u2ab += einsum('kcBJ,ikac->iJaB',eris.ovVO,t2aa)
+    u2ab += einsum('KCai,JKBC->iJaB',eris.OVvo,t2bb)
+    u2ab += einsum('KCBJ,iKaC->iJaB',eris.OVVO,t2ab)
+    u2ab -= einsum('KJBC,iKaC->iJaB',eris.OOVV,t2ab)
+    u2ab -= einsum('kiBC,kJaC->iJaB',eris.ooVV,t2ab)
+    u2ab -= einsum('KJac,iKcB->iJaB',eris.OOvv,t2ab)
+    u2ab += einsum('kcai,kJcB->iJaB',eris.ovvo,t2ab)
+    u2ab -= einsum('kiac,kJcB->iJaB',eris.oovv,t2ab)
+    if nvira > 0 and noccb > 0:
+        blksize = max(ccsd.BLKMIN, int(max_memory*1e6/8/(nvirb*nvira**2*3+1)))
+        for p0,p1 in lib.prange(0, noccb, blksize):
+            OVvv = eris.get_OVvv(slice(p0,p1))  # OVvv = eris.OVvv[p0:p1]
+            u2ab[p0:p1] += einsum('JBca,ic->iJaB',OVvv,t1a)
+            OVvv = None
+    if nvirb > 0 and nocca > 0:
+        blksize = max(ccsd.BLKMIN, int(max_memory*1e6/8/(nvira*nvirb**2*3+1)))
+        for p0,p1 in lib.prange(0, nocca, blksize):
+            ovVV = eris.get_ovVV(slice(p0,p1))  # ovVV = eris.ovVV[p0:p1]
+            u2ab[p0:p1] += einsum('iaCB,JC->iJaB',ovVV,t1b)
+            ovVV = tmp1ab = None
+    u2ab -= einsum('JBik,ka->iJaB',eris.OVoo,t1a)
+    u2ab -= einsum('iaJK,KB->iJaB',eris.ovOO,t1b)
+    # disconnected term
+    u2ab += einsum('ia,JB->iJaB',fova,t1b)
+    u2ab += einsum('JB,ia->iJaB',fovb,t1a)
+
+#    e = energy_ci(t1, t2, eris)
+#    u1a -= e * t1a
+#    u1b -= e * t1b
+#    u2aa -= e * t2aa
+#    u2ab -= e * t2ab
+#    u2bb -= e * t2bb
+
+#    time0 = log.timer_debug1('update t1 t2', *time0)
+#    return (-u1a, -u1b), (-u2aa, -u2ab, -u2bb)
+    return (u1a, u1b), (u2aa, u2ab, u2bb)
+
