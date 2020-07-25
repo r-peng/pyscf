@@ -9,6 +9,12 @@ def compute_energy(f0, eri, d, l): # eri in physicists notation
     e += 0.5 * einsum('pqrs,rspq',eri,l)
     return e
 
+def energy(f0, eri, t1, t2):
+    aov, boo, bvv = compute_irred(t1, t2, order=4)
+    d = propagate1(aov, boo, bvv)
+    l = propagate2(t2, d, maxiter=500)
+    return compute_energy(f0, eri, d, l)
+
 def sort1(tup):
     a, b = tup
     na0, na1 = a.shape
