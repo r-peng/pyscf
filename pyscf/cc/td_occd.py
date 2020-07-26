@@ -31,7 +31,7 @@ def update_T(t, eris):
     Fvv  = eris.fvv.copy()
     Fvv -= 0.5 * einsum('klcd,bdkl->bc',eris.oovv,t)
 
-    dt  = eris.oovv.transpose(2,3,0,1).conj()
+    dt  = eris.oovv.transpose(2,3,0,1).conj().copy()
     dt += einsum('bc,acij->abij',Fvv,t)
     dt += einsum('ac,cbij->abij',Fvv,t)
     dt -= einsum('kj,abik->abij',Foo,t)
@@ -50,9 +50,78 @@ def update_T(t, eris):
     dt += tmp.copy()
     return dt
 
+def update_L(t, l, eris):
+#    Foo  = eris.foo.copy()
+#    Foo += 0.5 * einsum('ilcd,cdkl->ik',eris.oovv,t)
+#    Fvv  = eris.fvv.copy()
+#    Fvv -= 0.5 * einsum('klad,cdkl->ca',eris.oovv,t)
+#    
+#    dl  = eris.oovv.copy() 
+#    dl += einsum('ca,ijcb->ijab',Fvv,l)
+#    dl += einsum('cb,ijac->ijab',Fvv,l)
+#    dl -= einsum('ik,kjab->ijab',Foo,l)
+#    dl -= einsum('jk,ikab->ijab',Foo,l)
+#
+#    tmp  = 0.5 * einsum('ilcd,cdkl->ik',l,t)
+#    dl -= einsum('ik,kjab->ijab',tmp,eris.oovv)
+#    dl -= einsum('jk,ikab->ijab',tmp,eris.oovv)
+#    tmp  = 0.5 * einsum('klad,cdkl->ca',l,t)
+#    dl += einsum('ca,ijcb->ijab',tmp,eris.oovv)
+#    dl += einsum('cb,ijac->ijab',tmp,eris.oovv)
+#
+#    vvvv  = eris.vvvv.copy()
+#    vvvv += 0.5 * einsum('klab,cdkl->cdab',eris.oovv,t)
+#    oooo  = eris.oooo.copy()
+#    oooo += 0.5 * einsum('ijcd,cdkl->ijkl',eris.oovv,t)
+#
+#    dl += 0.5 * einsum('cdab,ijcd->ijab',vvvv,l)
+#    dl += 0.5 * einsum('ijkl,klab->ijab',oooo,l)
+#
+#    ovvo  = eris.ovvo.copy()
+#    ovvo += einsum('jlbd,cdkl->jcbk',eris.oovv,t)
+#    tmp  = einsum('jcbk,ikac->ijab',ovvo,l)
+#    tmp += tmp.transpose(1,0,3,2)
+#    tmp -= tmp.transpose(0,1,3,2)
+#    dl += tmp.copy()
+
+    dl_  = eris.oovv.copy()
+    tmp  = einsum('ca,ijcb->ijab',eris.fvv,l)
+    tmp -= tmp.transpose(0,1,3,2)
+    dl_ += tmp.copy()
+    tmp  = einsum('ik,kjab->ijab',eris.foo,l)
+    tmp -= tmp.transpose(1,0,2,3)
+    dl_ -= tmp.copy()
+    dl_ += 0.5 * einsum('cdab,ijcd->ijab',eris.vvvv,l)
+    dl_ += 0.5 * einsum('ijkl,klab->ijab',eris.oooo,l)
+
+    tmp  = 0.5 * einsum('ilcd,cdkl,kjab->ijab',eris.oovv,t,l)
+    tmp -= tmp.transpose(1,0,2,3)
+    dl_ -= tmp.copy()
+    tmp  = 0.5 * einsum('klad,cdkl,ijcb->ijab',eris.oovv,t,l)
+    tmp -= tmp.transpose(0,1,3,2)
+    dl_ -= tmp.copy()
+    tmp  = 0.5 * einsum('ilcd,cdkl,kjab->ijab',l,t,eris.oovv)
+    tmp -= tmp.transpose(1,0,2,3)                           
+    dl_ -= tmp.copy()                                       
+    tmp  = 0.5 * einsum('klad,cdkl,ijcb->ijab',l,t,eris.oovv)
+    tmp -= tmp.transpose(0,1,3,2)
+    dl_ -= tmp.copy()
+
+    tmp  = einsum('jcbk,ikac->ijab',eris.ovvo,l)
+    tmp += tmp.transpose(1,0,3,2)
+    tmp -= tmp.transpose(0,1,3,2)
+    dl_ += tmp.copy()
+    tmp  = einsum('jlbd,cdkl,ikac->ijab',eris.oovv,t,l)    
+    tmp += tmp.transpose(1,0,3,2)
+    tmp -= tmp.transpose(0,1,3,2)
+    dl_ += tmp.copy()
+    dl_ += 0.25 * einsum('klab,cdkl,ijcd->ijab',l,t,eris.oovv)
+    dl_ += 0.25 * einsum('klab,cdkl,ijcd->ijab',eris.oovv,t,l)
+#    print(np.linalg.norm(dl_-dl))
+    return dl_
+
 class ERIs:
-    def __init__(self, mf, mo_coeff=None):
-        mo_coeff = mf.mo_coeff if mo_coeff is None else mo_coeff
+    def __init__(self, mf):
         nmo = mf.mol.nao_nr()
         noa, nob = mf.mol.nelec
         no = noa + nob
@@ -64,7 +133,7 @@ class ERIs:
         self.fvv = f0[no:,no:].copy()
 
         eri = mf.mol.intor('int2e_sph', aosym='s8')
-        eri = ao2mo.incore.full(eri, mo_coeff)
+        eri = ao2mo.incore.full(eri, mf.mo_coeff)
         eri = ao2mo.restore(1, eri, nmo)
         eri = eri.transpose(0,2,1,3)
         eri = sort2((eri, eri, eri), anti=False).astype(complex)
@@ -72,9 +141,9 @@ class ERIs:
 #        print('interal symmetry: {}'.format(np.linalg.norm(eri+eri.transpose(1,0,2,3)))) 
 #        print('interal symmetry: {}'.format(np.linalg.norm(eri+eri.transpose(0,1,3,2)))) 
 #        print('interal symmetry: {}'.format(np.linalg.norm(eri-eri.transpose(1,0,3,2))))
-
         self.oovv = eri[:no,:no,no:,no:].copy() 
         self.ovvo = eri[:no,no:,no:,:no].copy() 
         self.oooo = eri[:no,:no,:no,:no].copy() 
         self.vvvv = eri[no:,no:,no:,no:].copy() 
+
  
