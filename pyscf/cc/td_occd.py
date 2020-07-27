@@ -1,4 +1,5 @@
 import numpy as np
+import scipy
 from pyscf import lib, ao2mo
 einsum = lib.einsum
 
@@ -25,7 +26,7 @@ def sort2(tup, anti):
         out[1::2, ::2, ::2,1::2] = - ab.transpose(1,0,2,3).copy()
     return out
 
-def update_T(t, eris):
+def update_t(t, eris):
     Foo  = eris.foo.copy()
     Foo += 0.5 * einsum('klcd,cdjl->kj',eris.oovv,t)
     Fvv  = eris.fvv.copy()
@@ -50,7 +51,7 @@ def update_T(t, eris):
     dt += tmp.copy()
     return dt
 
-def update_L(t, l, eris):
+def update_l(t, l, eris):
     Foo  = eris.foo.copy()
     Foo += 0.5 * einsum('ilcd,cdkl->ik',eris.oovv,t)
     Fvv  = eris.fvv.copy()
@@ -85,12 +86,12 @@ def update_L(t, l, eris):
     dl += tmp.copy()
     return dl
 
-def gamma1(t, l): # normal ordered
+def compute_gamma1(t, l): # normal ordered, asymmetric
     dvv = 0.5 * einsum('ikac,bcik->ba',l,t)
     doo = - 0.5 * einsum('jkac,acik->ji',l,t)
     return doo, dvv
 
-def gamma2(t, l):
+def compute_gamma2(t, l): # normal ordered, asymmetric
     doovv = l.copy()
     dovvo = einsum('jkbc,acik->jabi',l,t)
     dvvvv = 0.5 * einsum('ijab,cdij->cdab',l,t)
@@ -112,9 +113,9 @@ def gamma2(t, l):
     dvvoo += 0.25 * einsum('klij,abkl->abij',tmp,t)
     return doooo, doovv, dvvoo, dovvo, dvvvv
 
-def rdm(t, l): # asymmetric
-    doo, dvv = gamma1(t, l)
-    doooo, doovv, dvvoo, dovvo, dvvvv = gamma2(t, l)
+def compute_rdms(t, l): # symmetric
+    doo, dvv = compute_gamma1(t, l)
+    doooo, doovv, dvvoo, dovvo, dvvvv = compute_gamma2(t, l)
 
     no, nv = doo.shape[0], dvv.shape[0]
     nmo = no + nv
@@ -144,27 +145,131 @@ def rdm(t, l): # asymmetric
     d2 = 0.5 * (d2 + d2.transpose(2,3,0,1).conj())
     return d1, d2
 
+def compute_kappa_intermediates(t, l, eris):
+    doo, dvv = gamma1(t, l)
+    doooo, doovv, dvvoo, dovvo, dvvvv = gamma2(t, l)
+
+    no, nv = doo.shape[0], dvv.shape[0]
+    Aovvo  = einsum('ba,ij->jbai',np.eye(nv),doo+np.eye(no))
+    Aovvo -= einsum('ij,ba->jbai',np.eye(no),dvv)
+
+    Cov  = einsum('ba,ja->jb',dvv,eris.fov.conj())
+    Cov -= einsum('ij,ib->jb',doo,eris.fov.conj())
+    Cov -= eris.fov.conj().copy()
+    Cov += 0.5 * einsum('abik,kija->jb',dvvoo,eris.ooov)
+    Cov += 0.5 * einsum('abcd,jadc->jb',dvvvv,eris.ovvv.conj())
+    Cov += einsum('ibak,jika->jb',dovvo,eris.ooov.conj())
+    Cov -= 0.5 * einsum('acjk,kbca->jb',dvvoo,eris.ovvv)
+    Cov -= 0.5 * einsum('iljk,likb->jb',doooo,eris.ooov.conj())
+    Cov -= einsum('kacj,kacb->jb',dovvo,eris.ovvv.conj())
+    Cov -= einsum('ac,jabc->jb',dvv,eris.ovvv.conj())
+    Cov -= einsum('lk,ljkb->jb',doo,eris.ooov.conj())
+
+    Cvo  = einsum('ji,ib->bj',doo,eris.fov)
+    Cvo -= einsum('ab,ja->bj',dvv,eris.fov)
+    Cvo -= eris.fov.T
+    Cvo += 0.5 * einsum('ijac,ibac->bj',doovv,eris.ovvv.conj())
+    Cvo += 0.5 * einsum('ijkl,klib->bj',doooo,eris.ooov)
+    Cvo += einsum('jaci,icab->bj',dovvo,eris.ovvv)
+    Cvo -= 0.5 * einsum('kiba,kija->bj',doovv,eris.ooov.conj())
+    Cvo -= 0.5 * einsum('dcba,jadc->bj',dvvvv,eris.ovvv)
+    Cvo -= einsum('kabi,jika->bj',dovvo,eris.ooov)
+    Cvo += einsum('ca,jabc->bj',dvv,eris.ovvv)
+    Cvo += einsum('ki,ijkb->bj',doo,eris.ooov)
+    return Aovvo, Cov, Cvo
+
+def kernel_it(mf, maxiter=100, step=0.03, thresh=1e-8):
+    def kernel_t(eris):
+        eo = np.diag(eris.foo)
+        ev = np.diag(eris.fvv)
+        eia = lib.direct_sum('i-a->ia', eo, ev)
+        eabij = lib.direct_sum('ia+jb->abij', eia, eia)
+        t = eris.oovv.transpose(2,3,0,1).conj()/eabij
+
+        converged = False
+        for i in range(maxiter):
+            dt = td_occd.update_t(t,eris)
+            dnorm = np.linalg.norm(dt)
+            t -= step * dt
+            if dnorm < thresh:
+                converged = True
+                break
+        if not converged: 
+            print('t amplitude not converged!')
+        return t
+
+    def kernel_l(eris, t):
+        l = t.transpose(2,3,0,1).copy()
+
+        converged = False
+        for i in range(maxiter):
+            dl = td_occd.update_l(t,l,eris)
+            dnorm = np.linalg.norm(dl)
+            l -= step * dl
+            if dnorm < thresh:
+                converged = True
+                break
+        if not converged: 
+            print('l amplitude not converged!')
+        return t
+
+    def update_orbital(eris, t, l, mo_coeff):
+        Aovvo, Cov, Cvo = compute_kappa_intermediates(t, l, eris) 
+        Aovvo -= Aovvo.transpose(3,2,1,0)
+        Cov -= Cvo.T
+
+        no, nv = Cov.shape
+        nmo = no + nv
+        Aovvo = Aovvo.reshape(no*nv,no*nv)
+        Cov = Cov.reshape(no*nv)
+        kappa = np.dot(np.linalg.inv(Aovvo),Cov)
+        if np.linalg.norm(kappa) < thresh:
+            return mo_coeff, True
+        else:
+            kappa = kappa.reshape(nv,no)
+            kappa = np.block([np.zeros((no,no)),-kappa.T],
+                             [kappa,   np.zeros((nv,nv))])
+            U = scipy.linalg.expm(kappa) # U = U_{old,new}
+            mo_coeff = np.dot(mo_coeff, U)
+            return mo_coeff, False 
+
+    eris = td_occd.ERIs(mf)
+    mo_coeff = mf.mo_coeff.copy()
+
+    converged = False
+    for i in range(maxiter):
+        t = kernel_t(eris)
+        l = kernel_l(eris, t)
+        eris, converged = update_orbitals(eris, t, l)
+        if converged:
+            break
+    return t, l, 
+
 class ERIs:
     def __init__(self, mf):
-        nmo = mf.mol.nao_nr()
-        noa, nob = mf.mol.nelec
-        no = noa + nob
+        self.mf = mf
+        self.fock_ao = mf.get_fock()
+        self.eri_ao = mf.mol.intor('int2e_sph', aosym='s8')
+        self.update_hamiltonian(mf.mo_coeff)
 
-        f0 = np.diag(mf.mo_energy)
+    def update_orbital(mo_coeff):
+        nmo = mo_coeff.shape[0]
+        no = sum(self.mf.mol.nelec)
+
+        f0 = einsum('uv,up,vq->pq',self.fock_ao,mo_coeff,mo_coeff)
         f0 = sort1((f0, f0)).astype(complex)
         self.foo = f0[:no,:no].copy()
         self.fov = f0[:no,no:].copy()
         self.fvv = f0[no:,no:].copy()
 
-        eri = mf.mol.intor('int2e_sph', aosym='s8')
-        eri = ao2mo.incore.full(eri, mf.mo_coeff)
+        eri = ao2mo.incore.full(self.eri_ao, mo_coeff)
         eri = ao2mo.restore(1, eri, nmo)
         eri = eri.transpose(0,2,1,3)
         eri = sort2((eri, eri, eri), anti=False).astype(complex)
         eri -= eri.transpose(0,1,3,2)
+        self.oooo = eri[:no,:no,:no,:no].copy() 
+        self.ooov = eri[:no,:no,:no,no:].copy()
         self.oovv = eri[:no,:no,no:,no:].copy() 
         self.ovvo = eri[:no,no:,no:,:no].copy() 
-        self.oooo = eri[:no,:no,:no,:no].copy() 
+        self.ovvv = eri[:no,no:,no:,no:].copy()
         self.vvvv = eri[no:,no:,no:,no:].copy() 
-
- 
