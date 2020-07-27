@@ -85,6 +85,65 @@ def update_L(t, l, eris):
     dl += tmp.copy()
     return dl
 
+def gamma1(t, l): # normal ordered
+    dvv = 0.5 * einsum('ikac,bcik->ba',l,t)
+    doo = - 0.5 * einsum('jkac,acik->ji',l,t)
+    return doo, dvv
+
+def gamma2(t, l):
+    doovv = l.copy()
+    dovvo = einsum('jkbc,acik->jabi',l,t)
+    dvvvv = 0.5 * einsum('ijab,cdij->cdab',l,t)
+    doooo = 0.5 * einsum('klab,abij->klij',l,t)
+    dvvoo = t.copy()
+    tmp  = einsum('acik,klcd->alid',t,l)
+    tmp  = einsum('alid,bdjl->abij',tmp,t)
+    tmp -= tmp.transpose(0,1,3,2)
+    dvvoo += tmp.copy()
+    tmp  = einsum('adkl,klcd->ac',t,l)
+    tmp  = einsum('ac,cbij->abij',tmp,t)
+    tmp -= tmp.transpose(1,0,2,3)
+    dvvoo -= 0.5 * tmp.copy()
+    tmp  = einsum('cdil,klcd->ki',t,l)
+    tmp  = einsum('ki,abkj->abij',tmp,t)
+    tmp -= tmp.transpose(0,1,3,2)
+    dvvoo -= 0.5 * tmp.copy()
+    tmp  = einsum('cdij,klcd->klij',t,l)
+    dvvoo += 0.25 * einsum('klij,abkl->abij',tmp,t)
+    return doooo, doovv, dvvoo, dovvo, dvvvv
+
+def rdm(t, l): # asymmetric
+    doo, dvv = gamma1(t, l)
+    doooo, doovv, dvvoo, dovvo, dvvvv = gamma2(t, l)
+
+    no, nv = doo.shape[0], dvv.shape[0]
+    nmo = no + nv
+    doooo += einsum('ki,lj->klij',np.eye(no),doo)
+    doooo += einsum('lj,ki->klij',np.eye(no),doo)
+    doooo -= einsum('li,kj->klij',np.eye(no),doo)
+    doooo -= einsum('kj,li->klij',np.eye(no),doo)
+    doooo += einsum('ki,lj->klij',np.eye(no),np.eye(no))
+    doooo -= einsum('li,kj->klij',np.eye(no),np.eye(no))
+    dovvo -= einsum('ji,ab->jabi',np.eye(no),dvv)
+    doo += np.eye(no)
+
+    d1 = np.zeros((nmo,nmo))
+    d1[:no,:no] = doo.copy()
+    d1[no:,no:] = dvv.copy()
+    d2 = np.zeros((nmo,nmo,nmo,nmo))
+    d2[:no,:no,:no,:no] = doooo.copy()
+    d2[:no,:no,no:,no:] = doovv.copy()
+    d2[no:,no:,:no,:no] = dvvoo.copy()
+    d2[:no,no:,no:,:no] = dovvo.copy()
+    d2[no:,:no,:no,no:] = dovvo.transpose(1,0,3,2)
+    d2[:no,no:,:no,no:] = - dovvo.transpose(0,1,3,2)
+    d2[no:,:no,no:,:no] = - dovvo.transpose(1,0,2,3)
+    d2[no:,no:,no:,no:] = dvvvv.copy()
+
+    d1 = 0.5 * (d1 + d1.T.conj())
+    d2 = 0.5 * (d2 + d2.transpose(2,3,0,1).conj())
+    return d1, d2
+
 class ERIs:
     def __init__(self, mf):
         nmo = mf.mol.nao_nr()
