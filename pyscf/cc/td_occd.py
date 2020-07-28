@@ -7,7 +7,7 @@ def sort1(tup):
     a, b = tup
     na0, na1 = a.shape
     nb0, nb1 = b.shape
-    out = np.zeros((na0+nb0,na1+nb1))
+    out = np.zeros((na0+nb0,na1+nb1),dtype=complex)
     out[ ::2, ::2] = a.copy()
     out[1::2,1::2] = b.copy()
     return out
@@ -16,7 +16,7 @@ def sort2(tup, anti):
     aa, ab, bb = tup
     na0, na1, na2, na3 = aa.shape
     nb0, nb1, nb2, nb3 = bb.shape
-    out = np.zeros((na0+nb0,na1+nb1,na2+nb2,na3+nb3))
+    out = np.zeros((na0+nb0,na1+nb1,na2+nb2,na3+nb3),dtype=complex)
     out[ ::2, ::2, ::2, ::2] = aa.copy() 
     out[1::2,1::2,1::2,1::2] = bb.copy() 
     out[ ::2,1::2, ::2,1::2] = ab.copy()
@@ -113,25 +113,26 @@ def compute_gamma2(t, l): # normal ordered, asymmetric
     dvvoo += 0.25 * einsum('klij,abkl->abij',tmp,t)
     return doooo, doovv, dvvoo, dovvo, dvvvv
 
-def compute_rdms(t, l): # symmetric
+def compute_rdms(t, l, normal=False, symm=True):
     doo, dvv = compute_gamma1(t, l)
     doooo, doovv, dvvoo, dovvo, dvvvv = compute_gamma2(t, l)
 
     no, nv = doo.shape[0], dvv.shape[0]
     nmo = no + nv
-    doooo += einsum('ki,lj->klij',np.eye(no),doo)
-    doooo += einsum('lj,ki->klij',np.eye(no),doo)
-    doooo -= einsum('li,kj->klij',np.eye(no),doo)
-    doooo -= einsum('kj,li->klij',np.eye(no),doo)
-    doooo += einsum('ki,lj->klij',np.eye(no),np.eye(no))
-    doooo -= einsum('li,kj->klij',np.eye(no),np.eye(no))
-    dovvo -= einsum('ji,ab->jabi',np.eye(no),dvv)
-    doo += np.eye(no)
+    if not normal:
+        doooo += einsum('ki,lj->klij',np.eye(no),doo)
+        doooo += einsum('lj,ki->klij',np.eye(no),doo)
+        doooo -= einsum('li,kj->klij',np.eye(no),doo)
+        doooo -= einsum('kj,li->klij',np.eye(no),doo)
+        doooo += einsum('ki,lj->klij',np.eye(no),np.eye(no))
+        doooo -= einsum('li,kj->klij',np.eye(no),np.eye(no))
+        dovvo -= einsum('ji,ab->jabi',np.eye(no),dvv)
+        doo += np.eye(no)
 
-    d1 = np.zeros((nmo,nmo))
+    d1 = np.zeros((nmo,nmo),dtype=complex)
     d1[:no,:no] = doo.copy()
     d1[no:,no:] = dvv.copy()
-    d2 = np.zeros((nmo,nmo,nmo,nmo))
+    d2 = np.zeros((nmo,nmo,nmo,nmo),dtype=complex)
     d2[:no,:no,:no,:no] = doooo.copy()
     d2[:no,:no,no:,no:] = doovv.copy()
     d2[no:,no:,:no,:no] = dvvoo.copy()
@@ -141,13 +142,14 @@ def compute_rdms(t, l): # symmetric
     d2[no:,:no,no:,:no] = - dovvo.transpose(1,0,2,3)
     d2[no:,no:,no:,no:] = dvvvv.copy()
 
-    d1 = 0.5 * (d1 + d1.T.conj())
-    d2 = 0.5 * (d2 + d2.transpose(2,3,0,1).conj())
+    if symm:
+        d1 = 0.5 * (d1 + d1.T.conj())
+        d2 = 0.5 * (d2 + d2.transpose(2,3,0,1).conj())
     return d1, d2
 
 def compute_kappa_intermediates(t, l, eris):
-    doo, dvv = gamma1(t, l)
-    doooo, doovv, dvvoo, dovvo, dvvvv = gamma2(t, l)
+    doo, dvv = compute_gamma1(t, l)
+    doooo, doovv, dvvoo, dovvo, dvvvv = compute_gamma2(t, l)
 
     no, nv = doo.shape[0], dvv.shape[0]
     Aovvo  = einsum('ba,ij->jbai',np.eye(nv),doo+np.eye(no))
@@ -178,7 +180,29 @@ def compute_kappa_intermediates(t, l, eris):
     Cvo += einsum('ki,ijkb->bj',doo,eris.ooov)
     return Aovvo, Cov, Cvo
 
-def kernel_it(mf, maxiter=100, step=0.03, thresh=1e-8):
+def compute_energy(eris, t, l, mo_coeff):
+    e  = einsum('ii',eris.foo)
+    e -= 0.5 * einsum('ijij',eris.oooo)
+    e += 0.25 * einsum('ijab,abij',eris.oovv,t)
+
+#    eri = einsum('uvxy,up,vr->prxy',eris.eri_ao,mo_coeff,mo_coeff)
+#    eri = einsum('prxy,xq,ys->prqs',eri,mo_coeff,mo_coeff)
+#    eri = eri.transpose(0,2,1,3)
+#    eri = sort2((eri, eri, eri), anti=False)
+#    eri -= eri.transpose(0,1,3,2)
+
+#    no, nv = eris.fov.shape
+#    e2  = einsum('ii',eris.foo)
+#    e2 -= 0.5 * einsum('ijij',eris.oooo)
+##    d1, d2 = compute_rdms(t, l, normal=True, symm=False)
+#    d1, d2 = compute_rdms(t, l, normal=True)
+#    e2 += einsum('ij,ji',eris.foo,d1[:no,:no])
+#    e2 += einsum('ab,ba',eris.fvv,d1[no:,no:])
+#    e2 += 0.25 * einsum('pqrs,rspq',eri,d2)
+#    print('e - e2: {}'.format(e.real-e2.real))
+    return e.real
+
+def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
     def kernel_t(eris):
         eo = np.diag(eris.foo)
         ev = np.diag(eris.fvv)
@@ -188,9 +212,10 @@ def kernel_it(mf, maxiter=100, step=0.03, thresh=1e-8):
 
         converged = False
         for i in range(maxiter):
-            dt = td_occd.update_t(t,eris)
+            dt = update_t(t,eris)
             dnorm = np.linalg.norm(dt)
             t -= step * dt
+#            print('iter: {}, dnorm: {}'.format(i, dnorm))
             if dnorm < thresh:
                 converged = True
                 break
@@ -203,69 +228,147 @@ def kernel_it(mf, maxiter=100, step=0.03, thresh=1e-8):
 
         converged = False
         for i in range(maxiter):
-            dl = td_occd.update_l(t,l,eris)
+            dl = update_l(t,l,eris)
             dnorm = np.linalg.norm(dl)
             l -= step * dl
+#            print('iter: {}, dnorm: {}'.format(i, dnorm))
             if dnorm < thresh:
                 converged = True
                 break
         if not converged: 
             print('l amplitude not converged!')
-        return t
+        return l
 
     def update_orbital(eris, t, l, mo_coeff):
         Aovvo, Cov, Cvo = compute_kappa_intermediates(t, l, eris) 
-        Aovvo -= Aovvo.transpose(3,2,1,0)
+#        Aovvo -= Aovvo.transpose(3,2,1,0)
+        Aovvo += Aovvo.transpose(3,2,1,0)
         Cov -= Cvo.T
-
         no, nv = Cov.shape
         nmo = no + nv
+
+        d1, d2 = compute_rdms(t, l)
+        A  = einsum('ab,ij->jbai',np.eye(nv),d1[:no,:no])
+        A -= einsum('ij,ab->jbai',np.eye(no),d1[no:,no:])
+        print('check A: {}'.format(np.linalg.norm(2*A-Aovvo)))
+        h = einsum('uv,up,vq->pq',eris.hao,mo_coeff,mo_coeff)
+        h = sort1((h,h))
+        eri = einsum('uvxy,up,vr->prxy',eris.eri_ao,mo_coeff,mo_coeff)
+        eri = einsum('prxy,xq,ys->prqs',eri,mo_coeff,mo_coeff)
+        eri = eri.transpose(0,2,1,3)
+        eri = sort2((eri, eri, eri), anti=False)
+        eri -= eri.transpose(0,1,3,2)
+        C1  = einsum('vp,pu->uv',d1,h) 
+        C1 -= einsum('vp,qu->uv',h,d1)
+        C1 += 0.5 * einsum('pqus,vspq->uv',eri,d2)
+        C1 -= 0.5 * einsum('vqrs,rsuq->uv',eri,d2)
+
+        d1, d2 = compute_rdms(t, l, normal=True)
+        C2  = einsum('ba,ja->jb',d1[no:,no:],eris.fov.conj())
+        C2 -= einsum('ij,ib->jb',d1[:no,:no],eris.fov.conj())
+        C2 -= eris.fov.conj()
+        C2 += 0.5 * einsum('abik,kija->jb',d2[no:,no:,:no,:no],eris.ooov)
+        C2 += 0.5 * einsum('abcd,jadc->jb',d2[no:,no:,no:,no:],eris.ovvv.conj())
+        C2 += einsum('ibak,jika->jb',d2[:no,no:,no:,:no],eris.ooov.conj())
+        C2 -= 0.5 * einsum('acjk,kbca->jb',d2[no:,no:,:no,:no],eris.ovvv)
+        C2 -= 0.5 * einsum('iljk,likb->jb',d2[:no,:no,:no,:no],eris.ooov.conj())
+        C2 -= einsum('kacj,kacb->jb',d2[:no,no:,no:,:no],eris.ovvv.conj())
+        C2 -= einsum('ac,jabc->jb',d1[no:,no:],eris.ovvv.conj())
+        C2 -= einsum('lk,ljkb->jb',d1[:no,:no],eris.ooov.conj())
+
+        C3  = einsum('ba,ja->jb',d1[no:,no:],eris.fov.conj())
+        C3 -= einsum('ij,ib->jb',d1[:no,:no],eris.fov.conj())
+        C3 -= eris.fov.conj()
+        C3 += 0.5 * einsum('bvpq,pqjv->jb',d2[no:,:,:,:],eri[:,:,:no,:])
+        print('check C: {}'.format(np.linalg.norm(2*C[:no,no:]-Cov)))
+        print('check C2: {}'.format(np.linalg.norm(2*C_-Cov)))
+        exit()
+
         Aovvo = Aovvo.reshape(no*nv,no*nv)
         Cov = Cov.reshape(no*nv)
         kappa = np.dot(np.linalg.inv(Aovvo),Cov)
-        if np.linalg.norm(kappa) < thresh:
-            return mo_coeff, True
-        else:
-            kappa = kappa.reshape(nv,no)
-            kappa = np.block([np.zeros((no,no)),-kappa.T],
-                             [kappa,   np.zeros((nv,nv))])
-            U = scipy.linalg.expm(kappa) # U = U_{old,new}
-            mo_coeff = np.dot(mo_coeff, U)
-            return mo_coeff, False 
+        dnorm = np.linalg.norm(kappa)
+        kappa = kappa.reshape(nv,no)
+#        kappa = step * kappa.reshape(nv,no)
+        kappa = np.block([[np.zeros((no,no)),kappa.T],
+                          [-kappa, np.zeros((nv,nv))]])
+        U = scipy.linalg.expm(kappa[::2,::2]) # U = U_{old,new}
+        mo_coeff = np.dot(mo_coeff, U)
+        return mo_coeff, dnorm 
 
-    eris = td_occd.ERIs(mf)
+    eris = ERIs(mf)
     mo_coeff = mf.mo_coeff.copy()
+    e = mf.energy_elec()[0]
 
     converged = False
     for i in range(maxiter):
         t = kernel_t(eris)
         l = kernel_l(eris, t)
-        eris, converged = update_orbitals(eris, t, l)
-        if converged:
+        e_new = compute_energy(eris, t, l, mo_coeff)
+        mo_coeff, dnorm = update_orbital(eris, t, l, mo_coeff)
+        de, e = e_new - e, e_new
+        print('iter: {}, dnorm: {}, de: {}, energy: {}'.format(i, dnorm, de, e))
+        eris.update_hamiltonian(mo_coeff)
+#        exit()
+        if abs(de) < thresh:
+            converged = True
             break
-    return t, l, 
+    return t, l, mo_coeff 
 
 class ERIs:
     def __init__(self, mf):
         self.mf = mf
-        self.fock_ao = mf.get_fock()
-        self.eri_ao = mf.mol.intor('int2e_sph', aosym='s8')
+        self.hao = mf.get_hcore()
+        self.fock_ao = mf.get_fock().astype(complex)
+        self.eri_ao = mf.mol.intor('int2e_sph').astype(complex)
+
+        mo_coeff = mf.mo_coeff
+#        eri = mf.mol.intor('int2e_sph', aosym='s8')
+#        eri = ao2mo.incore.full(eri, mo_coeff)
+#        eri = ao2mo.restore(1, eri, mf.mol.nao_nr())
+#        eri_ = einsum('uvxy,up,vr->prxy',self.eri_ao,mo_coeff,mo_coeff)
+#        eri_ = einsum('prxy,xq,ys->prqs',eri_,mo_coeff,mo_coeff)
+#        print('check integral tranformation: {}'.format(np.linalg.norm(eri-eri_)))
+#        f0 = einsum('uv,up,vq->pq',self.fock_ao,mo_coeff,mo_coeff)
+#        print('check fock: {}'.format(np.linalg.norm(f0-np.diag(mf.mo_energy))))
+#        exit()
+
         self.update_hamiltonian(mf.mo_coeff)
 
-    def update_orbital(mo_coeff):
+#        e  = einsum('ii',self.foo)
+#        e -= 0.5 * einsum('ijij',self.oooo)
+#        h = einsum('uv,up,vq->pq',self.hao,mo_coeff,mo_coeff)
+#        h = sort1((h, h))
+#        no, nv = self.fov.shape
+#        e  = einsum('ii',h[:no,:no])
+#        e += 0.5 * einsum('ijij',self.oooo)
+#        eri = einsum('uvxy,up,vr->prxy',self.eri_ao,mo_coeff,mo_coeff)
+#        eri = einsum('prxy,xq,ys->prqs',eri,mo_coeff,mo_coeff)
+#        eri = eri.transpose(0,2,1,3)
+#        eri = sort2((eri, eri, eri), anti=False)
+#        eri -= eri.transpose(0,1,3,2)
+#        t = np.zeros((nv,nv,no,no),dtype=complex)
+#        l = np.zeros((no,no,nv,nv),dtype=complex)
+#        d1, d2 = compute_rdms(t, l)
+#        e  = einsum('pq,qp',h,d1)
+#        e += 0.25 * einsum('pqrs,rspq',eri,d2)
+#        print('check HF energy: {}'.format(mf.energy_elec()[0]-e.real))
+#        exit()
+
+    def update_hamiltonian(self, mo_coeff):
         nmo = mo_coeff.shape[0]
         no = sum(self.mf.mol.nelec)
 
         f0 = einsum('uv,up,vq->pq',self.fock_ao,mo_coeff,mo_coeff)
-        f0 = sort1((f0, f0)).astype(complex)
+        f0 = sort1((f0, f0))
         self.foo = f0[:no,:no].copy()
         self.fov = f0[:no,no:].copy()
         self.fvv = f0[no:,no:].copy()
 
-        eri = ao2mo.incore.full(self.eri_ao, mo_coeff)
-        eri = ao2mo.restore(1, eri, nmo)
+        eri = einsum('uvxy,up,vr->prxy',self.eri_ao,mo_coeff,mo_coeff)
+        eri = einsum('prxy,xq,ys->prqs',eri,mo_coeff,mo_coeff)
         eri = eri.transpose(0,2,1,3)
-        eri = sort2((eri, eri, eri), anti=False).astype(complex)
+        eri = sort2((eri, eri, eri), anti=False)
         eri -= eri.transpose(0,1,3,2)
         self.oooo = eri[:no,:no,:no,:no].copy() 
         self.ooov = eri[:no,:no,:no,no:].copy()
