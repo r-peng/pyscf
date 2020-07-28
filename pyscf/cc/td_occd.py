@@ -242,7 +242,7 @@ def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
     def update_orbital(eris, t, l, mo_coeff):
         Aovvo, Cov, Cvo = compute_kappa_intermediates(t, l, eris) 
 #        Aovvo -= Aovvo.transpose(3,2,1,0)
-        Aovvo += Aovvo.transpose(3,2,1,0)
+        Aovvo += Aovvo.transpose(3,2,1,0).conj()
         Cov -= Cvo.T
         no, nv = Cov.shape
         nmo = no + nv
@@ -258,10 +258,27 @@ def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
         eri = eri.transpose(0,2,1,3)
         eri = sort2((eri, eri, eri), anti=False)
         eri -= eri.transpose(0,1,3,2)
-        C1  = einsum('vp,pu->uv',d1,h) 
-        C1 -= einsum('vp,qu->uv',h,d1)
-        C1 += 0.5 * einsum('pqus,vspq->uv',eri,d2)
-        C1 -= 0.5 * einsum('vqrs,rsuq->uv',eri,d2)
+
+#        C1  = einsum('vp,pu->uv',d1,h) 
+#        C1 -= einsum('vp,qu->uv',h,d1)
+#        C1 += 0.5 * einsum('pqus,vspq->uv',eri,d2)
+#        C1 -= 0.5 * einsum('vqrs,rsuq->uv',eri,d2)
+        C1  = einsum('bp,pj->jb',d1[no:,:],h[:,:no]) 
+        C1 -= einsum('qj,bq->jb',d1[:,:no],h[no:,:])
+        C1 += 0.5 * einsum('pqjs,bspq->jb',eri[:,:,:no,:],d2[no:,:,:,:])
+        C1 -= 0.5 * einsum('bqrs,rsjq->jb',eri[no:,:,:,:],d2[:,:,:no,:])
+
+        C1_  = einsum('ba,ja->jb',d1[no:,no:],h[:no,no:].conj())
+        C1_ -= einsum('ij,ib->jb',d1[:no,:no],h[:no,no:].conj())
+        C1_ += 0.5 * einsum('abik,kija->jb',d2[no:,no:,:no,:no],eris.ooov)
+        C1_ += 0.5 * einsum('abcd,jadc->jb',d2[no:,no:,no:,no:],eris.ovvv.conj())
+        C1_ += einsum('ibak,jika->jb',d2[:no,no:,no:,:no],eris.ooov.conj())
+        C1_ -= 0.5 * einsum('acjk,kbca->jb',d2[no:,no:,:no,:no],eris.ovvv)
+        C1_ -= 0.5 * einsum('iljk,likb->jb',d2[:no,:no,:no,:no],eris.ooov.conj())
+        C1_ -= einsum('kacj,kacb->jb',d2[:no,no:,no:,:no],eris.ovvv.conj())
+        print('C-C1: {}'.format(np.linalg.norm(Cov-2.0*C1)))
+        print('C-C1_: {}'.format(np.linalg.norm(Cov-2.0*C1_)))
+        print('C1-C1_: {}'.format(np.linalg.norm(C1-C1_)))
 
         d1, d2 = compute_rdms(t, l, normal=True)
         C2  = einsum('ba,ja->jb',d1[no:,no:],eris.fov.conj())
@@ -276,12 +293,14 @@ def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
         C2 -= einsum('ac,jabc->jb',d1[no:,no:],eris.ovvv.conj())
         C2 -= einsum('lk,ljkb->jb',d1[:no,:no],eris.ooov.conj())
 
-        C3  = einsum('ba,ja->jb',d1[no:,no:],eris.fov.conj())
-        C3 -= einsum('ij,ib->jb',d1[:no,:no],eris.fov.conj())
-        C3 -= eris.fov.conj()
-        C3 += 0.5 * einsum('bvpq,pqjv->jb',d2[no:,:,:,:],eri[:,:,:no,:])
-        print('check C: {}'.format(np.linalg.norm(2*C[:no,no:]-Cov)))
-        print('check C2: {}'.format(np.linalg.norm(2*C_-Cov)))
+        C2_  = einsum('ba,ja->jb',d1[no:,no:],eris.fov.conj())
+        C2_ -= einsum('ij,ib->jb',d1[:no,:no],eris.fov.conj())
+        C2_ -= eris.fov.conj()
+        C2_ += 0.5 * einsum('bvpq,pqjv->jb',d2[no:,:,:,:],eri[:,:,:no,:])
+        C2_ -= 0.5 * einsum('uvjq,bquv->jb',d2[:,:,:no,:],eri[no:,:,:,:])
+        C2_ -= einsum('vq,bqjv->jb',d1,eri[no:,:,:no,:])
+        print('C-C2: {}'.format(np.linalg.norm(Cov-2*C2)))
+        print('C2-C2_: {}'.format(np.linalg.norm(C2-C2_)))
         exit()
 
         Aovvo = Aovvo.reshape(no*nv,no*nv)
@@ -375,4 +394,5 @@ class ERIs:
         self.oovv = eri[:no,:no,no:,no:].copy() 
         self.ovvo = eri[:no,no:,no:,:no].copy() 
         self.ovvv = eri[:no,no:,no:,no:].copy()
-        self.vvvv = eri[no:,no:,no:,no:].copy() 
+        self.vvvv = eri[no:,no:,no:,no:].copy()
+
