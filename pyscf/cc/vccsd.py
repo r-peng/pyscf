@@ -100,7 +100,6 @@ def propagate1(aov, boo, bvv):
     g[:no,:no] = - np.eye(no)
 
     d = np.dot(sigma, np.linalg.inv(np.eye(nmo) + np.dot(g,sigma)))
-#    print('d symm: {}'.format(np.linalg.norm(d-d.T)))
     return d
 
 def propagate2(t2, d, maxiter=100, thresh=1e-8):
@@ -134,135 +133,12 @@ def propagate2(t2, d, maxiter=100, thresh=1e-8):
         dnorm = np.linalg.norm(G_new - G)
         L, R, G = L_new.copy(), R_new.copy(), G_new.copy()
 #        print('iter: {}, dnorm: {}'.format(i, dnorm))
-#        print('G12 symm:{},{},{},{}'.format(
-#            np.linalg.norm(G12+G12.transpose(1,0,2,3)),
-#            np.linalg.norm(G12+G12.transpose(0,1,3,2)),
-#            np.linalg.norm(G12-G12.transpose(1,0,3,2)),
-#            np.linalg.norm(G12-G12.transpose(2,3,0,1))))
-#        print('G13 symm:{},{}'.format(
-#                np.linalg.norm(G13-G13.transpose(1,0,3,2)),
-#                np.linalg.norm(G13-G13.transpose(2,3,0,1))))
-#        print('G14 symm:{},{}'.format(
-#                np.linalg.norm(G14-G14.transpose(1,0,3,2)),
-#                np.linalg.norm(G14-G14.transpose(2,3,0,1))))
-#        print('G symm:{},{},{},{}'.format(
-#            np.linalg.norm(G+G.transpose(1,0,2,3)),
-#            np.linalg.norm(G+G.transpose(0,1,3,2)),
-#            np.linalg.norm(G-G.transpose(1,0,3,2)),
-#            np.linalg.norm(G-G.transpose(2,3,0,1))))
-#        print('G13/14 symm:{}'.format(np.linalg.norm(G13+G14.transpose(0,1,3,2))))
         if dnorm < thresh:
             conv = True
             break
     if not conv:
         print('Propagation of Gamma2 did not converge!')
-#    print('G symm:\n{}\n{}\n{}\n{}'.format(
-#        np.linalg.norm(G+G.transpose(1,0,2,3)),
-#        np.linalg.norm(G+G.transpose(0,1,3,2)),
-#        np.linalg.norm(G-G.transpose(1,0,3,2)),
-#        np.linalg.norm(G-G.transpose(2,3,0,1))))
     l = einsum('uvxy,xr,ys->uvrs',G,g,g) 
     l = einsum('uvrs,up,vq->pqrs',l,g,g) 
     return l
 
-if __name__ == '__main__':
-    from pyscf import gto, scf, ao2mo, fci, cc
-
-    mol = gto.Mole()
-    mol.atom = [['B',(0, 0, 0)], ['H',(0, 3.0, 0)]] 
-    mol.basis = 'sto-3g'
-    mol.symmetry = False
-    mol.build()
-    nmo = mol.nao_nr()
-    noa, nob = mol.nelec
-    no = noa + nob
-    
-    mf = scf.RHF(mol)
-    mf.kernel()
-    eri = mf.mol.intor('int2e_sph', aosym='s8')
-    eri = ao2mo.incore.full(eri,mf.mo_coeff)
-    eri = ao2mo.restore(1,eri,nmo)
-    eri = eri.transpose(0,2,1,3)
-    f0 = np.diag(mf.mo_energy)
-
-    cisolver = fci.FCI(mol, mf.mo_coeff)
-    cisolver.kernel()   
-
-    (da, db), (laa, lab, lbb) = cisolver.make_rdm12s(cisolver.ci,nmo,(noa,nob))
-    laa  = laa.transpose(0,2,1,3)
-    laa -= einsum('pr,qs->pqrs',da,da) 
-    laa += einsum('ps,qr->pqrs',da,da)  
-    lbb  = lbb.transpose(0,2,1,3)
-    lbb -= einsum('pr,qs->pqrs',db,db) 
-    lbb += einsum('ps,qr->pqrs',db,db)  
-    lab  = lab.transpose(0,2,1,3)
-    lab -= einsum('pr,qs->pqrs',da,db) 
-    da[:noa,:noa] -= np.eye(noa)
-    db[:nob,:nob] -= np.eye(nob)
-
-    f0 = sort1((f0, f0))
-    d = sort1((da, db))
-    eri = sort2((eri, eri, eri), anti=False)
-    l = sort2((laa, lab, lbb), anti=True)
-    e = compute_energy(f0, eri, d, l)
-    print('FCI energy check: {}'.format(cisolver.eci-mf.e_tot-e))
-
-    mycc = cc.UCCSD(mf.to_uhf())
-    emp2, t1, t2 = mycc.init_amps() 
-    t1 = sort1(t1)
-    t2 = sort2(t2, anti=True)
-
-    _, doo, dvv = compute_irred(t1, t2, order=2)
-    d = np.zeros((nmo*2,)*2)
-    d[:no,:no] = doo.copy()
-    d[no:,no:] = dvv.copy()
-    l = np.zeros((nmo*2,)*4)
-    l[:no,:no,no:,no:] = t2.copy()
-    l[no:,no:,:no,:no] = t2.transpose(2,3,0,1)
-    e  = einsum('pr,rp',f0,d)
-    e += 0.5 * einsum('pqrs,rspq',eri,l)
-    print('MP2 energy check: {}'.format(emp2-e))
-
-    mycc.kernel()
-    t1 = sort1(mycc.t1)
-    t2 = sort2(mycc.t2, anti=True)
-    aov, boo, bvv = compute_irred(t1, t2, order=4)
-    check  = t1.copy()
-    check += einsum('ijab,jb->ia',t2,t1)
-    check += einsum('ijab,jkbc,kc->ia',t2,t2,t1)
-    check -= einsum('ijab,kb,kc,jc->ia',t2,t1,t1,t1)
-    check -= 0.5 * einsum('ijab,klbd,klcd,jc->ia',t2,t2,t2,t1)
-    check -= 0.5 * einsum('ijab,jlcd,klcd,kb->ia',t2,t2,t2,t1)
-    check += einsum('ijab,jkbc,klcd,ld->ia',t2,t2,t2,t1)
-    check -= einsum('ijdb,jkbc,klca,ld->ia',t2,t2,t2,t1)
-    check += 0.25 * einsum('klab,klcd,ijcd,jb->ia',t2,t2,t2,t1)
-    print('check ov: {}'.format(np.linalg.norm(aov-check)))
-    check  = 0.0
-    check += 0.5 * einsum('klad,klbd->ab',t2,t2)
-    check -= 0.5 * einsum('ijac,ijbd,kc,kd->ab',t2,t2,t1,t1)
-    check -= einsum('ikac,jkbc,id,jd->ab',t2,t2,t1,t1)
-    check -= 0.5 * einsum('kjcd,kicd,ilae,jlbe->ab',t2,t2,t2,t2)
-    check -= 0.25 * einsum('klec,klfc,ijaf,ijbe->ab',t2,t2,t2,t2)
-    check += einsum('klcd,lmde,ikac,imbe->ab',t2,t2,t2,t2)
-    check += 0.125 * einsum('ijcd,klcd,ijae,klbe->ab',t2,t2,t2,t2) 
-    print('check vv: {}'.format(np.linalg.norm(bvv-check)))
-#    exit()
-    check  = 0.0
-    check -= 0.5 * einsum('kjcd,kicd->ij',t2,t2)
-    check += 0.5 * einsum('ikab,jlab,kc,lc->ij',t2,t2,t1,t1)
-    check += einsum('ikac,jkbc,lb,la->ij',t2,t2,t1,t1)
-    check += 0.5 * einsum('klad,klbd,imae,jmbe->ij',t2,t2,t2,t2)
-    check += 0.25 * einsum('kmcd,klcd,mjab,liab->ij',t2,t2,t2,t2)
-    check -= einsum('klcd,lmde,jkbc,imbe->ij',t2,t2,t2,t2)
-    check -= 0.125 * einsum('klab,klcd,mjab,micd->ij',t2,t2,t2,t2)
-    print('check oo: {}'.format(np.linalg.norm(boo-check)))
-
-    fov = f0[:no,no:]
-    oovv = eri[:no,:no,no:,no:]
-    e  = einsum('ia,ia',fov,t1)
-    e += 0.5 * einsum('ijab,ijab',oovv,t2)
-    e += 0.5 * einsum('ijab,ia,jb',oovv,t1,t1)
-    e -= 0.5 * einsum('jiab,ia,jb',oovv,t1,t1)
-    print('CC energy check: {}'.format(mycc.e_corr-e))
-
-    
