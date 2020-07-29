@@ -3,57 +3,72 @@ import scipy
 from pyscf import lib, ao2mo
 einsum = lib.einsum
 
-def sort1(tup):
-    a, b = tup
-    na0, na1 = a.shape
-    nb0, nb1 = b.shape
-    out = np.zeros((na0+nb0,na1+nb1),dtype=complex)
-    out[ ::2, ::2] = a.copy()
-    out[1::2,1::2] = b.copy()
-    return out
-
-def sort2(tup, anti):
-    aa, ab, bb = tup
-    na0, na1, na2, na3 = aa.shape
-    nb0, nb1, nb2, nb3 = bb.shape
-    out = np.zeros((na0+nb0,na1+nb1,na2+nb2,na3+nb3),dtype=complex)
-    out[ ::2, ::2, ::2, ::2] = aa.copy() 
-    out[1::2,1::2,1::2,1::2] = bb.copy() 
-    out[ ::2,1::2, ::2,1::2] = ab.copy()
-    out[1::2, ::2,1::2, ::2] = ab.transpose(1,0,3,2).copy()
-    if anti:
-        out[ ::2,1::2,1::2, ::2] = - ab.transpose(0,1,3,2).copy()
-        out[1::2, ::2, ::2,1::2] = - ab.transpose(1,0,2,3).copy()
-    return out
-
 def update_t(t, eris):
-    no = t.shape[3]
-    f = eris.f
-    eri = eris.eri
+    taa, tab, tbb = t
+    fa, fb = eris.f
+    eri_aa, eri_ab, eri_bb = eris.eri
+    _, _, noa, nob = tab.shape
 
-    Foo  = f[:no,:no].copy()
-    Foo += 0.5 * einsum('klcd,cdjl->kj',eri[:no,:no,no:,no:],t)
-    Fvv  = f[no:,no:].copy()
-    Fvv -= 0.5 * einsum('klcd,bdkl->bc',eri[:no,:no,no:,no:],t)
+    Foo  = fa[:noa,:noa].copy()
+    Foo += 0.5 * einsum('klcd,cdjl->kj',eri_aa[:noa,:noa,noa:,noa:],taa)
+    Foo +=       einsum('kLcD,cDjL->kj',eri_ab[:noa,:noa,noa:,noa:],tab)
+    Fvv  = fa[noa:,noa:].copy()
+    Fvv -= 0.5 * einsum('klcd,bdkl->bc',eri_aa[:noa,:noa,noa:,noa:],taa)
+    Fvv -=       einsum('kLcD,bDkL->bc',eri_ab[:noa,:noa,noa:,noa:],tab)
+    FOO = Foo.copy()
+    FVV = Fvv.copy()
 
-    dt  = eri[no:,no:,:no,:no].copy()
-    dt += einsum('bc,acij->abij',Fvv,t)
-    dt += einsum('ac,cbij->abij',Fvv,t)
-    dt -= einsum('kj,abik->abij',Foo,t)
-    dt -= einsum('ki,abkj->abij',Foo,t)
+    dtaa  = eri_aa[noa:,noa:,:noa,:noa].copy()
+    dtaa += einsum('bc,acij->abij',Fvv,taa)
+    dtaa += einsum('ac,cbij->abij',Fvv,taa)
+    dtaa -= einsum('kj,abik->abij',Foo,taa)
+    dtaa -= einsum('ki,abkj->abij',Foo,taa)
 
-    dt += 0.5 * einsum('klij,abkl->abij',eri[:no,:no,:no,:no],t)
-    dt += 0.5 * einsum('abcd,cdij->abij',eri[no:,no:,no:,no:],t)
-    tmp = 0.5 * einsum('klcd,cdij->klij',eri[:no,:no,no:,no:],t)
-    dt += 0.5 * einsum('klij,abkl->abij',tmp,t)
+    dtab  = eri_ab[noa:,nob:,:noa,:nob].copy()
+    dtab += einsum('BC,aCiJ->aBiJ',FVV,tab)
+    dtab += einsum('ac,cBiJ->aBiJ',Fvv,tab)
+    dtab -= einsum('KJ,aBiK->aBiJ',FOO,tab)
+    dtab -= einsum('ki,aBkJ->aBiJ',Foo,tab)
 
-    tmp  = eri[:no,no:,no:,:no].copy()
-    tmp += 0.5 * einsum('klcd,bdjl->kbcj',eri[:no,:no,no:,no:],t)
-    tmp  = einsum('kbcj,acik->abij',tmp,t)
+    dtaa += 0.5 * einsum('abcd,cdij->abij',eri_aa[noa:,noa:,noa:,noa:],taa)
+    dtab +=       einsum('aBcD,cDiJ->aBiJ',eri_ab[noa:,nob:,noa:,nob:],tab)
+
+    loooo  = eri_aa[:noa,:noa,:noa,:noa]
+    loooo += 0.5 * einsum('klcd,cdij->klij',eri_aa[:noa,:noa,noa:,noa:],taa)
+    loOoO  = eri_ab[:noa,:nob,:noa,:nob]
+    loOoO +=       einsum('kLcD,cDiJ->kLiJ',eri_ab[:noa,:nob,noa:,nob:],tab)
+    dtaa += 0.5 * einsum('klij,abkl->abij',loooo,taa)
+    dtab +=       einsum('kLiJ,aBkL->aBiJ',loOoO,tab)
+
+    rovvo  = eri_aa[:noa,noa:,noa:,:noa].copy()
+    rovvo += 0.5 * einsum('klcd,bdjl->kbcj',eri_aa[:noa,:noa,noa:,noa:],taa)
+    rovvo += 0.5 * einsum('kLcD,bDjL->kbcj',eri_ab[:noa,:nob,noa:,nob:],tab)
+    rvOoV  = eri_ab[noa:,:nob,:noa,nob:].copy()
+    rvOoV += 0.5 * einsum('lKdC,bdjl->bKjC',eri_ab[:noa,:nob,noa:,nob:],taa)
+    rvOoV += 0.5 * einsum('KLCD,bDjL->bKjC',eri_bb[:nob,:nob,nob:,nob:],tab)
+    tmp  = einsum('kbcj,acik->abij',rovvo,taa)
+    tmp += einsum('bKjC,aCiK->abij',rvOoV,tab)
     tmp += tmp.transpose(1,0,3,2)
     tmp -= tmp.transpose(0,1,3,2)
-    dt += tmp.copy()
-    return dt
+    dtaa += tmp.copy()
+
+    roVvO  = eri_ab[:noa,nob:,noa:,:nob].copy()
+    roVvO += 0.5 * einsum('kLcD,BDJL->kBcJ',eri_ab[:noa,:nob,noa:,nob:],tbb)
+    roVvO += 0.5 * einsum('klcd,dBlJ->kBcJ',eri_aa[:noa,:noa,noa:,noa:],tab)
+    rOVVO = rovvo.copy()
+    roVoV  = - eri_ab[:noa,nob:,:noa,nob:].copy()
+    roVoV += 0.5 * einsum('kLdC,dBiL->kBiC',eri_ab[:noa,:nob,noa:,nob:],tab)
+    rvOvO  = - eri_ab[noa:,:nob,noa:,:nob].copy()  
+    rvOvO += 0.5 * einsum('lKcD,bDlI->bKcI',eri_ab[:noa,:nob,noa:,nob:],tab)
+    dtab += einsum('kBcJ,acik->aBiJ',roVvO,taa)
+    dtab += einsum('KBCJ,aCiK->aBiJ',rOVVO,tab)
+    dtab += einsum('kBiC,aCkJ->aBiJ',roVoV,tab)
+    dtab += einsum('aKcJ,cBiK->aBiJ',rvOvO,tab)
+    dtab += einsum('kaci,cBkJ->aBiJ',rovvo,tab)
+    dtab += einsum('aKiC,BCJK->aBiJ',rvOoV,tbb)
+
+    dtbb = dtaa.copy()
+    return dtaa, dtab, dtbb
 
 def update_l(t, l, eris):
     no = t.shape[3]
@@ -296,22 +311,22 @@ def kernel_it2(mf, maxiter=1000, step=0.03, thresh=1e-8):
 
 class ERIs:
     def __init__(self, mf):
-        self.hao = mf.get_hcore()
-        self.fao = mf.get_fock()
-        self.eri_ao = mf.mol.intor('int2e_sph')
+        self.hao = mf.get_hcore().astype(complex)
+        self.fao = mf.get_fock().astype(complex)
+        self.eri_ao = mf.mol.intor('int2e_sph').astype(complex)
         self.ao2mo(mf.mo_coeff)
 
     def ao2mo(self, mo_coeff):
         nmo = mo_coeff.shape[0]
     
         h = einsum('uv,up,vq->pq',self.hao,mo_coeff.conj(),mo_coeff)
-        self.h = sort1((h,h))
+        self.h = h, h
     
         f = einsum('uv,up,vq->pq',self.fao,mo_coeff.conj(),mo_coeff)
-        self.f = sort1((f,f))
+        self.f = f, f
     
         eri = einsum('uvxy,up,vr->prxy',self.eri_ao,mo_coeff.conj(),mo_coeff)
         eri = einsum('prxy,xq,ys->prqs',eri,mo_coeff.conj(),mo_coeff)
         eri = eri.transpose(0,2,1,3)
-        eri = sort2((eri, eri, eri), anti=False)
-        self.eri = eri - eri.transpose(0,1,3,2)
+        eri_aa = eri - eri.transpose(0,1,3,2)
+        self.eri = eri_aa, eri, eri_aa

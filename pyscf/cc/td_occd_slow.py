@@ -28,8 +28,8 @@ def sort2(tup, anti):
 
 def update_t(t, eris):
     no = t.shape[3]
-    f = eris.f
-    eri = eris.eri
+    f = eris.f.copy()
+    eri = eris.eri.copy()
 
     Foo  = f[:no,:no].copy()
     Foo += 0.5 * einsum('klcd,cdjl->kj',eri[:no,:no,no:,no:],t)
@@ -57,8 +57,8 @@ def update_t(t, eris):
 
 def update_l(t, l, eris):
     no = t.shape[3]
-    f = eris.f
-    eri = eris.eri
+    f = eris.f.copy()
+    eri = eris.eri.copy()
 
     Foo  = f[:no,:no].copy()
     Foo += 0.5 * einsum('ilcd,cdkl->ik',eri[:no,:no,no:,no:],t)
@@ -157,8 +157,8 @@ def compute_rdms(t, l, normal=False, symm=True):
 
 def compute_kappa_intermediates(d1, d2, eris, no):
     nv = d1.shape[0] - no
-    h = eris.h
-    eri = eris.eri    
+    h = eris.h.copy()
+    eri = eris.eri.copy()
 
     Cov  = einsum('ba,aj->jb',d1[no:,no:],h[no:,:no]) 
     Cov -= einsum('ij,bi->jb',d1[:no,:no],h[no:,:no])
@@ -181,10 +181,8 @@ def compute_kappa(d1, d2, eris, no):
     return kappa
 
 def compute_energy(d1, d2, eris):
-    h = eris.h
-    eri = eris.eri    
-    e  = einsum('pq,qp',h,d1)
-    e += 0.25 * einsum('pqrs,rspq',eri,d2)
+    e  = einsum('pq,qp',eris.h,d1)
+    e += 0.25 * einsum('pqrs,rspq',eris.eri,d2)
     return e.real
 
 def kernel_it1(mf, maxiter=1000, step=0.03, thresh=1e-6):
