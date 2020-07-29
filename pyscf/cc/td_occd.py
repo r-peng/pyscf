@@ -151,9 +151,8 @@ def compute_rdms(t, l, normal=False, symm=True):
         d2 = 0.5 * (d2 + d2.transpose(2,3,0,1).conj())
     return d1, d2
 
-def compute_kappa_intermediates(t, l, h, eri):
-    d1, d2 = compute_rdms(t, l, normal=False, symm=True)
-    no, _, nv, _ = l.shape 
+def compute_kappa_intermediates(d1, d2, h, eri, no):
+    nv = d1.shape[0] - no
 
     Cov  = einsum('ba,aj->jb',d1[no:,no:],h[no:,:no]) 
     Cov -= einsum('ij,bi->jb',d1[:no,:no],h[no:,:no])
@@ -164,9 +163,9 @@ def compute_kappa_intermediates(t, l, h, eri):
     Aovvo -= einsum('ij,ba->jbai',np.eye(no),d1[no:,no:])
     return Aovvo, Cov
 
-def compute_kappa(t, l, h, eri):
-    Aovvo, Cov = compute_kappa_intermediates(t, l, h, eri)
-    no, nv = Cov.shape
+def compute_kappa(d1, d2, h, eri, no):
+    Aovvo, Cov = compute_kappa_intermediates(d1, d2, h, eri, no)
+    nv = d1.shape[0] - no
     Aovvo = Aovvo.reshape(no*nv,no*nv)
     Cov = Cov.reshape(no*nv)
     kappa = np.dot(np.linalg.inv(Aovvo),Cov)
@@ -174,6 +173,11 @@ def compute_kappa(t, l, h, eri):
     kappa = np.block([[np.zeros((no,no)),-kappa.T.conj()],
                       [kappa, np.zeros((nv,nv))]])
     return kappa
+
+def compute_energy(d1, d2, h, eri):
+    e  = einsum('pq,qp',h,d1)
+    e += 0.25 * einsum('pqrs,rspq',eri,d2)
+    return e.real
 
 def kernel_it1(mf, maxiter=1000, step=0.03, thresh=1e-6):
     no = sum(mf.mol.nelec)
@@ -237,7 +241,8 @@ def kernel_it1(mf, maxiter=1000, step=0.03, thresh=1e-6):
         if abs(de) < thresh:
             converged = True
             break
-        kappa = compute_kappa(t, l, h, eri)
+        d1, d2 = compute_rdms(t, l)
+        kappa = compute_kappa(d1, d2, h, eri, no)
         dnorm = np.linalg.norm(kappa)
         print('iter: {}, dnorm: {}, de: {}, energy: {}'.format(i, dnorm, de, e))
         U = scipy.linalg.expm(step*kappa[::2,::2]) # U = U_{old,new}
@@ -246,40 +251,44 @@ def kernel_it1(mf, maxiter=1000, step=0.03, thresh=1e-6):
     return t, l, mo_coeff, e 
 
 def kernel_it2(mf, maxiter=1000, step=0.03, thresh=1e-8):
-#    def compute_energy(eris, )
+    no = sum(mf.mol.nelec)
+    hao = mf.get_hcore()
+    fao = mf.get_fock()
+    eri_ao = mf.mol.intor('int2e_sph')
 
-
-    eris = ERIs(mf)
     mo_coeff = mf.mo_coeff.copy()
-    e = mf.energy_elec()[0]
-    eo = np.diag(eris.foo)
-    ev = np.diag(eris.fvv)
+    h, f, eri = ao2mo(hao, fao, eri_ao, mo_coeff)
+    eo = np.diag(f[:no,:no])
+    ev = np.diag(f[no:,no:])
     eia = lib.direct_sum('i-a->ia', eo, ev)
     eabij = lib.direct_sum('ia+jb->abij', eia, eia)
-    t = eris.oovv.transpose(2,3,0,1).conj()/eabij
+    t = eri[no:,no:,:no,:no]/eabij
     l = t.transpose(2,3,0,1).copy()
+    d1, d2 = compute_rdms(t, l)
+    e = compute_energy(d1, d2, h, eri)
 
     converged = False
     for i in range(maxiter):
-        kappa = compute_kappa(t, l, eris)
-        dnormk = np.linalg.norm(kappa)
-        dt = update_t(t,eris)
-        dl = update_l(t,l,eris)
-        e_new = compute_energy(eris, t, l)
-        de, e = e_new - e, e_new
-        if abs(de) < thresh:
-            converged = True
-            break
-        dnormt = np.linalg.norm(dt)
-        dnorml = np.linalg.norm(dl)
-        print('iter: {}, dnorm: {}, de: {}, energy: {}'.format(i, dnorm, de, e))
-        t -= step * dt
-        l -= step * dl
+        kappa = compute_kappa(d1, d2, h, eri, no)
         U = scipy.linalg.expm(step*kappa[::2,::2]) # U = U_{old,new}
         mo_coeff = np.dot(mo_coeff, U)
-        eris.update_hamiltonian(mo_coeff)
-#        t, l = rotate_amps(t, l, U)
-    return t, l, mo_coeff 
+        h, f, eri = ao2mo(hao, fao, eri_ao, mo_coeff)
+        dt = update_t(t, f, eri)
+        dl = update_l(t, l, f, eri)
+        t -= step * dt
+        l -= step * dl
+        d1, d2 = compute_rdms(t, l)
+        e_new = compute_energy(d1, d2, h, eri)
+        de, e = e_new - e, e_new
+        dnormk = np.linalg.norm(kappa)
+        dnormt = np.linalg.norm(dt)
+        dnorml = np.linalg.norm(dl)
+        print('iter: {}, dk: {}, dt: {}, dl: {}, de: {}, energy: {}'.format(
+              i, dnormk, dnormt, dnorml, de, e))
+        if dnormk < thresh:
+            converged = True
+            break
+    return t, l, mo_coeff, e 
 
 def ao2mo(hao, fao, eri_ao, mo_coeff):
     nmo = mo_coeff.shape[0]
