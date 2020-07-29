@@ -175,13 +175,8 @@ def compute_kappa(t, l, eris):
                       [kappa, np.zeros((nv,nv))]])
     return kappa
 
-def compute_energy(eris, t, l):
-    e  = einsum('ii',eris.foo)
-    e -= 0.5 * einsum('ijij',eris.oooo)
-    e += 0.25 * einsum('ijab,abij',eris.oovv,t)
-    return e.real
 
-def kernel_it1(mf, maxiter=1000, step=0.03, thresh=1e-8):
+def kernel_it1(mf, maxiter=1000, step=0.03, thresh=1e-6):
     def kernel_t(eris):
         eo = np.diag(eris.foo)
         ev = np.diag(eris.fvv)
@@ -195,7 +190,7 @@ def kernel_it1(mf, maxiter=1000, step=0.03, thresh=1e-8):
             dnorm = np.linalg.norm(dt)
             t -= step * dt
 #            print('iter: {}, dnorm: {}'.format(i, dnorm))
-            if dnorm < thresh:
+            if dnorm < thresh*100:
                 converged = True
                 break
         if not converged: 
@@ -211,12 +206,18 @@ def kernel_it1(mf, maxiter=1000, step=0.03, thresh=1e-8):
             dnorm = np.linalg.norm(dl)
             l -= step * dl
 #            print('iter: {}, dnorm: {}'.format(i, dnorm))
-            if dnorm < thresh:
+            if dnorm < thresh*100:
                 converged = True
                 break
         if not converged: 
             print('l amplitude not converged!')
         return l
+
+    def compute_energy(eris, t, l):
+        e  = einsum('ii',eris.foo)
+        e -= 0.5 * einsum('ijij',eris.oooo)
+        e += 0.25 * einsum('ijab,abij',eris.oovv,t)
+        return e.real
 
     eris = ERIs(mf)
     mo_coeff = mf.mo_coeff.copy()
@@ -235,12 +236,13 @@ def kernel_it1(mf, maxiter=1000, step=0.03, thresh=1e-8):
         dnorm = np.linalg.norm(kappa)
         print('iter: {}, dnorm: {}, de: {}, energy: {}'.format(i, dnorm, de, e))
         U = scipy.linalg.expm(step*kappa[::2,::2]) # U = U_{old,new}
-#        U = scipy.linalg.expm(kappa[::2,::2]) # U = U_{old,new}
         mo_coeff = np.dot(mo_coeff, U)
         eris.update_hamiltonian(mo_coeff)
     return t, l, mo_coeff, e 
 
 def kernel_it2(mf, maxiter=1000, step=0.03, thresh=1e-8):
+#    def compute_energy(eris, )
+
 
     eris = ERIs(mf)
     mo_coeff = mf.mo_coeff.copy()
@@ -254,6 +256,8 @@ def kernel_it2(mf, maxiter=1000, step=0.03, thresh=1e-8):
 
     converged = False
     for i in range(maxiter):
+        kappa = compute_kappa(t, l, eris)
+        dnormk = np.linalg.norm(kappa)
         dt = update_t(t,eris)
         dl = update_l(t,l,eris)
         e_new = compute_energy(eris, t, l)
@@ -261,10 +265,8 @@ def kernel_it2(mf, maxiter=1000, step=0.03, thresh=1e-8):
         if abs(de) < thresh:
             converged = True
             break
-        kappa = compute_kappa(t, l, eris)
         dnormt = np.linalg.norm(dt)
         dnorml = np.linalg.norm(dl)
-        dnormk = np.linalg.norm(kappa)
         print('iter: {}, dnorm: {}, de: {}, energy: {}'.format(i, dnorm, de, e))
         t -= step * dt
         l -= step * dl
