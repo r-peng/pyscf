@@ -372,4 +372,4 @@ class ERIs:
         eri = einsum('prxy,xq,ys->prqs',eri,mo_coeff.conj(),mo_coeff)
         eri = eri.transpose(0,2,1,3)
         eri_aa = eri - eri.transpose(0,1,3,2)
-        self.eri = eri_aa, eri, eri_aa
+        self.eri = eri_aa.copy(), eri.copy(), eri_aa.copy()
