@@ -138,71 +138,64 @@ def update_amps(t, l, eris):
     dlbb = dlaa.copy()
     return (dtaa, dtab, dtbb), (dlaa, dlab, dlbb)
 
-def update_l(t, l, eris):
-    no = t.shape[3]
-    f = eris.f
-    eri = eris.eri
+def compute_gamma(t, l): # normal ordered, asymmetric
+    taa, tab, tbb = t
+    laa, lab, lbb = l
+    dvv  = 0.5 * einsum('ikac,bcik->ba',laa,taa)
+    dvv +=       einsum('iKaC,bCiK->ba',lab,tab)
+    doo  = 0.5 * einsum('jkac,acik->ji',laa,taa)
+    doo +=       einsum('jKaC,aCiK->ji',lab,tab)
+    doo *= - 1.0
+    dVV = dvv.copy()
+    dOO = doo.copy()
 
-    Foo  = f[:no,:no].copy()
-    Foo += 0.5 * einsum('ilcd,cdkl->ik',eri[:no,:no,no:,no:],t)
-    Fvv  = f[no:,no:].copy()
-    Fvv -= 0.5 * einsum('klad,cdkl->ca',eri[:no,:no,no:,no:],t)
-    
-    dl  = eri[:no,:no,no:,no:].copy() 
-    dl += einsum('ca,ijcb->ijab',Fvv,l)
-    dl += einsum('cb,ijac->ijab',Fvv,l)
-    dl -= einsum('ik,kjab->ijab',Foo,l)
-    dl -= einsum('jk,ikab->ijab',Foo,l)
+    dovvo  = einsum('jkbc,acik->jabi',laa,taa)
+    dovvo += einsum('jKbC,aCiK->jabi',lab,tab)
+    doVvO  = einsum('jkbc,cAkI->jAbI',laa,tab)
+    doVvO += einsum('jKbC,ACIK->jAbI',lab,tbb)
+    dvOoV  = einsum('kJcB,acik->aJiB',lab,taa)
+    dvOoV += einsum('JKBC,aCiK->aJiB',lbb,tab)
+    doVoV  = - einsum('jKcB,cAiK->jAiB',lab,tab)
+    dvOvO  = - einsum('kJbC,aCkI->aJbI',lab,tab) 
+    dOVVO  = dovvo.copy()
 
-    tmp  = 0.5 * einsum('ilcd,cdkl->ik',l,t)
-    dl -= einsum('ik,kjab->ijab',tmp,eri[:no,:no,no:,no:])
-    dl -= einsum('jk,ikab->ijab',tmp,eri[:no,:no,no:,no:])
-    tmp  = 0.5 * einsum('klad,cdkl->ca',l,t)
-    dl -= einsum('ca,ijcb->ijab',tmp,eri[:no,:no,no:,no:])
-    dl -= einsum('cb,ijac->ijab',tmp,eri[:no,:no,no:,no:])
+    dvvvv = 0.5 * einsum('ijab,cdij->cdab',laa,taa)
+    dvVvV =       einsum('iJaB,cDiJ->cDaB',lab,tab)
+    doooo = 0.5 * einsum('klab,abij->klij',laa,taa)
+    doOoO =       einsum('kLaB,aBiJ->kLiJ',lab,tab)
+    dVVVV = dvvvv.copy()
+    dOOOO = doooo.copy()
 
-    vvvv  = eri[no:,no:,no:,no:].copy()
-    vvvv += 0.5 * einsum('klab,cdkl->cdab',eri[:no,:no,no:,no:],t)
-    oooo  = eri[:no,:no,:no,:no].copy()
-    oooo += 0.5 * einsum('ijcd,cdkl->ijkl',eri[:no,:no,no:,no:],t)
-
-    dl += 0.5 * einsum('cdab,ijcd->ijab',vvvv,l)
-    dl += 0.5 * einsum('ijkl,klab->ijab',oooo,l)
-
-    ovvo  = eri[:no,no:,no:,:no].copy()
-    ovvo += einsum('jlbd,cdkl->jcbk',eri[:no,:no,no:,no:],t)
-    tmp  = einsum('jcbk,ikac->ijab',ovvo,l)
-    tmp += tmp.transpose(1,0,3,2)
-    tmp -= tmp.transpose(0,1,3,2)
-    dl += tmp.copy()
-    return dl
-
-def compute_gamma1(t, l): # normal ordered, asymmetric
-    dvv = 0.5 * einsum('ikac,bcik->ba',l,t)
-    doo = - 0.5 * einsum('jkac,acik->ji',l,t)
-    return doo, dvv
-
-def compute_gamma2(t, l): # normal ordered, asymmetric
-    doovv = l.copy()
-    dovvo = einsum('jkbc,acik->jabi',l,t)
-    dvvvv = 0.5 * einsum('ijab,cdij->cdab',l,t)
-    doooo = 0.5 * einsum('klab,abij->klij',l,t)
-    dvvoo = t.copy()
-    tmp  = einsum('acik,klcd->alid',t,l)
-    tmp  = einsum('alid,bdjl->abij',tmp,t)
+    dvvoo = taa.copy()
+    tmp  = einsum('ladi,bdjl->abij',dovvo,taa)
+    tmp += einsum('aLiD,bDjL->abij',dvOoV,tab)
     tmp -= tmp.transpose(0,1,3,2)
     dvvoo += tmp.copy()
-    tmp  = einsum('adkl,klcd->ac',t,l)
-    tmp  = einsum('ac,cbij->abij',tmp,t)
-    tmp -= tmp.transpose(1,0,2,3)
-    dvvoo -= 0.5 * tmp.copy()
-    tmp  = einsum('cdil,klcd->ki',t,l)
-    tmp  = einsum('ki,abkj->abij',tmp,t)
-    tmp -= tmp.transpose(0,1,3,2)
-    dvvoo -= 0.5 * tmp.copy()
-    tmp  = einsum('cdij,klcd->klij',t,l)
-    dvvoo += 0.25 * einsum('klij,abkl->abij',tmp,t)
-    return doooo, doovv, dvvoo, dovvo, dvvvv
+    dvvoo -= einsum('ac,cbij->abij',dvv,taa)
+    dvvoo -= einsum('bc,acij->abij',dvv,taa)
+    dvvoo += einsum('ki,abkj->abij',doo,taa)
+    dvvoo += einsum('kj,abik->abij',doo,taa)
+    dvvoo += 0.5 * einsum('klij,abkl->abij',doooo,taa)
+
+    dvVoO  = tab.copy()
+    dvVoO += einsum('ladi,dBlJ->aBiJ',dovvo,tab)
+    dvVoO += einsum('aLiD,BDJL->aBiJ',dvOoV,tbb)
+    dvVoO -= einsum('aLdJ,dBiL->aBiJ',dvOvO,tab)
+    dvVoO -= einsum('ac,cBiJ->aBiJ',dvv,tab)
+    dvVoO -= einsum('BC,aCiJ->aBiJ',dVV,tab)
+    dvVoO += einsum('ki,aBkJ->aBiJ',doo,tab)
+    dvVoO += einsum('KJ,aBiK->aBiJ',dOO,tab)
+    dvVoO += einsum('kLiJ,aBkL->aBiJ',doOoO,tab) 
+    dVVOO = dvvoo.copy()
+
+    doo = doo, dOO
+    dvv = dvv, dVV
+    doooo = doooo, doOoO, dOOOO
+    dvvvv = dvvvv, dvVvV, dVVVV
+    doovv = l
+    dvvoo = dvvoo, dvVoO, dVVOO
+    dovvo = dovvo, doVvO, dvOoV, doVoV, dvOvO, dOVVO 
+    return doo, dvv, doooo, doovv, dvvoo, dovvo, dvvvv 
 
 def compute_rdms(t, l, normal=False, symm=True):
     doo, dvv = compute_gamma1(t, l)
@@ -273,75 +266,7 @@ def compute_energy(d1, d2, eris):
 def kernel_it1(mf, maxiter=1000, step=0.03, thresh=1e-6):
     no = sum(mf.mol.nelec)
 
-    def kernel_t(eris):
-        eo = np.diag(eris.f[:no,:no])
-        ev = np.diag(eris.f[no:,no:])
-        eia = lib.direct_sum('i-a->ia', eo, ev)
-        eabij = lib.direct_sum('ia+jb->abij', eia, eia)
-        t = eris.eri[no:,no:,:no,:no]/eabij
-
-        converged = False
-        for i in range(maxiter):
-            dt = update_t(t, eris)
-            dnorm = np.linalg.norm(dt)
-            t -= step * dt
-#            print('iter: {}, dnorm: {}'.format(i, dnorm))
-            if dnorm < thresh*100:
-                converged = True
-                break
-        if not converged: 
-            print('t amplitude not converged!')
-        return t
-
-    def kernel_l(eris, t):
-        l = t.transpose(2,3,0,1).copy()
-
-        converged = False
-        for i in range(maxiter):
-            dl = update_l(t, l, eris)
-            dnorm = np.linalg.norm(dl)
-            l -= step * dl
-#            print('iter: {}, dnorm: {}'.format(i, dnorm))
-            if dnorm < thresh*100:
-                converged = True
-                break
-        if not converged: 
-            print('l amplitude not converged!')
-        return l
-
-    def compute_energy(eris, t):
-        f = eris.f
-        eri = eris.eri
-
-        e  = einsum('ii',f[:no,:no])
-        e -= 0.5 * einsum('ijij',eri[:no,:no,:no,:no])
-        e += 0.25 * einsum('ijab,abij',eri[:no,:no,no:,no:],t)
-        return e.real
-
-
-    mo_coeff = mf.mo_coeff.copy()
-    e = mf.energy_elec()[0]
-    eris = ERIs(mf)
-
-    converged = False
-    for i in range(maxiter):
-        t = kernel_t(eris)
-        l = kernel_l(eris, t)
-        e_new = compute_energy(eris, t)
-        de, e = e_new - e, e_new
-        if abs(de) < thresh:
-            converged = True
-            break
-        d1, d2 = compute_rdms(t, l)
-        kappa = compute_kappa(d1, d2, eris, no)
-        dnorm = np.linalg.norm(kappa)
-        print('iter: {}, dnorm: {}, de: {}, energy: {}'.format(i, dnorm, de, e))
-        U = scipy.linalg.expm(step*kappa[::2,::2]) # U = U_{old,new}
-        mo_coeff = np.dot(mo_coeff, U)
-        eris.ao2mo(mo_coeff)
-    return t, l, mo_coeff, e 
-
-def kernel_it2(mf, maxiter=1000, step=0.03, thresh=1e-8):
+def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
     no = sum(mf.mol.nelec)
     eris = ERIs(mf)
     mo_coeff = mf.mo_coeff.copy()
