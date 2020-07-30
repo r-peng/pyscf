@@ -3,8 +3,9 @@ import scipy
 from pyscf import lib, ao2mo
 einsum = lib.einsum
 
-def update_t(t, eris):
+def update_amps(t, l, eris):
     taa, tab, tbb = t
+    laa, lab, lbb = l
     fa, fb = eris.f
     eri_aa, eri_ab, eri_bb = eris.eri
     _, _, noa, nob = tab.shape
@@ -30,45 +31,112 @@ def update_t(t, eris):
     dtab -= einsum('KJ,aBiK->aBiJ',FOO,tab)
     dtab -= einsum('ki,aBkJ->aBiJ',Foo,tab)
 
+    dlaa  = eri_aa[:noa,:noa,noa:,noa:].copy()
+    dlaa += einsum('cb,ijac->ijab',Fvv,laa)
+    dlaa += einsum('ca,ijcb->ijab',Fvv,laa)
+    dlaa -= einsum('jk,ikab->ijab',Foo,laa)
+    dlaa -= einsum('ik,kjab->ijab',Foo,laa)
+
+    dlab  = eri_ab[:noa,:nob,noa:,nob:].copy()
+    dlab += einsum('CB,iJaC->iJaB',FVV,lab)
+    dlab += einsum('ca,iJcB->iJaB',Fvv,lab)
+    dlab -= einsum('JK,iKaB->iJaB',FOO,lab)
+    dlab -= einsum('ik,kJaB->iJaB',Foo,lab)
+
+    loooo  = eri_aa[:noa,:noa,:noa,:noa].copy()
+    loooo += 0.5 * einsum('klcd,cdij->klij',eri_aa[:noa,:noa,noa:,noa:],taa)
+    loOoO  = eri_ab[:noa,:nob,:noa,:nob].copy()
+    loOoO +=       einsum('kLcD,cDiJ->kLiJ',eri_ab[:noa,:nob,noa:,nob:],tab)
+    lvvvv  = eri_aa[noa:,noa:,noa:,noa:].copy()
+    lvvvv += 0.5 * einsum('klab,cdkl->cdab',eri_aa[:noa,:noa,noa:,noa:],taa)
+    lvVvV  = eri_ab[noa:,nob:,noa:,nob:].copy()
+    lvVvV +=       einsum('kLaB,cDkL->cDaB',eri_ab[:noa,:nob,noa:,nob:],tab)
+
     dtaa += 0.5 * einsum('abcd,cdij->abij',eri_aa[noa:,noa:,noa:,noa:],taa)
     dtab +=       einsum('aBcD,cDiJ->aBiJ',eri_ab[noa:,nob:,noa:,nob:],tab)
-
-    loooo  = eri_aa[:noa,:noa,:noa,:noa]
-    loooo += 0.5 * einsum('klcd,cdij->klij',eri_aa[:noa,:noa,noa:,noa:],taa)
-    loOoO  = eri_ab[:noa,:nob,:noa,:nob]
-    loOoO +=       einsum('kLcD,cDiJ->kLiJ',eri_ab[:noa,:nob,noa:,nob:],tab)
     dtaa += 0.5 * einsum('klij,abkl->abij',loooo,taa)
     dtab +=       einsum('kLiJ,aBkL->aBiJ',loOoO,tab)
 
-    rovvo  = eri_aa[:noa,noa:,noa:,:noa].copy()
-    rovvo += 0.5 * einsum('klcd,bdjl->kbcj',eri_aa[:noa,:noa,noa:,noa:],taa)
-    rovvo += 0.5 * einsum('kLcD,bDjL->kbcj',eri_ab[:noa,:nob,noa:,nob:],tab)
-    rvOoV  = eri_ab[noa:,:nob,:noa,nob:].copy()
-    rvOoV += 0.5 * einsum('lKdC,bdjl->bKjC',eri_ab[:noa,:nob,noa:,nob:],taa)
-    rvOoV += 0.5 * einsum('KLCD,bDjL->bKjC',eri_bb[:nob,:nob,nob:,nob:],tab)
-    tmp  = einsum('kbcj,acik->abij',rovvo,taa)
-    tmp += einsum('bKjC,aCiK->abij',rvOoV,tab)
+    dlaa += 0.5 * einsum('cdab,ijcd->ijab',lvvvv,laa)
+    dlab +=       einsum('cDaB,iJcD->iJaB',lvVvV,lab)
+    dlaa += 0.5 * einsum('ijkl,klab->ijab',loooo,laa)
+    dlab +=       einsum('iJkL,kLaB->iJaB',loOoO,lab)
+
+    tmp  = einsum('bkjc,acik->abij',eri_aa[noa:,:noa,:noa,noa:],taa)
+    tmp += einsum('bKjC,aCiK->abij',eri_ab[noa:,:nob,:noa,nob:],tab)
     tmp += tmp.transpose(1,0,3,2)
     tmp -= tmp.transpose(0,1,3,2)
     dtaa += tmp.copy()
+    dtab += einsum('kBcJ,acik->aBiJ',eri_ab[:noa,nob:,noa:,:nob],taa)
+    dtab += einsum('KBCJ,aCiK->aBiJ',eri_bb[:nob,nob:,nob:,:nob],tab)
+    dtab -= einsum('kBiC,aCkJ->aBiJ',eri_ab[:noa,nob:,:noa,nob:],tab)
+    dtab -= einsum('aKcJ,cBiK->aBiJ',eri_ab[noa:,:nob,noa:,:nob],tab)
+    dtab += einsum('akic,cBkJ->aBiJ',eri_aa[noa:,:noa,:noa,noa:],tab)
+    dtab += einsum('aKiC,BCJK->aBiJ',eri_ab[noa:,:nob,:noa,nob:],tbb)
 
-    roVvO  = eri_ab[:noa,nob:,noa:,:nob].copy()
-    roVvO += 0.5 * einsum('kLcD,BDJL->kBcJ',eri_ab[:noa,:nob,noa:,nob:],tbb)
-    roVvO += 0.5 * einsum('klcd,dBlJ->kBcJ',eri_aa[:noa,:noa,noa:,noa:],tab)
-    rOVVO = rovvo.copy()
-    roVoV  = - eri_ab[:noa,nob:,:noa,nob:].copy()
-    roVoV += 0.5 * einsum('kLdC,dBiL->kBiC',eri_ab[:noa,:nob,noa:,nob:],tab)
-    rvOvO  = - eri_ab[noa:,:nob,noa:,:nob].copy()  
-    rvOvO += 0.5 * einsum('lKcD,bDlI->bKcI',eri_ab[:noa,:nob,noa:,nob:],tab)
+    tmp  = einsum('jcbk,ikac->ijab',eri_aa[:noa,noa:,noa:,:noa],laa)
+    tmp += einsum('jCbK,iKaC->ijab',eri_ab[:noa,nob:,noa:,:nob],lab)
+    tmp += tmp.transpose(1,0,3,2)
+    tmp -= tmp.transpose(0,1,3,2)
+    dlaa += tmp.copy()
+    dlab += einsum('cJkB,ikac->iJaB',eri_ab[noa:,:nob,:noa,nob:],laa)
+    dlab += einsum('CJKB,iKaC->iJaB',eri_bb[nob:,:nob,:nob,nob:],lab)
+    dlab -= einsum('cJaK,iKcB->iJaB',eri_ab[noa:,:nob,noa:,:nob],lab)
+    dlab -= einsum('iCkB,kJaC->iJaB',eri_ab[:noa,nob:,:noa,nob:],lab)
+    dlab += einsum('icak,kJcB->iJaB',eri_aa[:noa,noa:,noa:,:noa],lab)
+    dlab += einsum('iCaK,JKBC->iJaB',eri_ab[:noa,nob:,noa:,:nob],lbb)
+
+    rovvo  = einsum('klcd,bdjl->kbcj',eri_aa[:noa,:noa,noa:,noa:],taa)
+    rovvo += einsum('kLcD,bDjL->kbcj',eri_ab[:noa,:nob,noa:,nob:],tab)
+    rvOoV  = einsum('lKdC,bdjl->bKjC',eri_ab[:noa,:nob,noa:,nob:],taa)
+    rvOoV += einsum('KLCD,bDjL->bKjC',eri_bb[:nob,:nob,nob:,nob:],tab)
+    roVvO  = einsum('kLcD,BDJL->kBcJ',eri_ab[:noa,:nob,noa:,nob:],tbb)
+    roVvO += einsum('klcd,dBlJ->kBcJ',eri_aa[:noa,:noa,noa:,noa:],tab)
+    rOVVO  = rovvo.copy()
+    roVoV  = einsum('kLdC,dBiL->kBiC',eri_ab[:noa,:nob,noa:,nob:],tab)
+    rvOvO  = einsum('lKcD,bDlI->bKcI',eri_ab[:noa,:nob,noa:,nob:],tab)
+
+    tmp  = einsum('kbcj,acik->abij',rovvo,taa)
+    tmp += einsum('bKjC,aCiK->abij',rvOoV,tab)
+    tmp -= tmp.transpose(0,1,3,2)
+    dtaa += tmp.copy()
     dtab += einsum('kBcJ,acik->aBiJ',roVvO,taa)
     dtab += einsum('KBCJ,aCiK->aBiJ',rOVVO,tab)
     dtab += einsum('kBiC,aCkJ->aBiJ',roVoV,tab)
-    dtab += einsum('aKcJ,cBiK->aBiJ',rvOvO,tab)
-    dtab += einsum('kaci,cBkJ->aBiJ',rovvo,tab)
-    dtab += einsum('aKiC,BCJK->aBiJ',rvOoV,tbb)
+
+    tmp  = einsum('jcbk,ikac->ijab',rovvo,laa)
+    tmp += einsum('jCbK,iKaC->ijab',roVvO,lab)
+    tmp += tmp.transpose(1,0,3,2)
+    tmp -= tmp.transpose(0,1,3,2)
+    dlaa += tmp.copy()
+
+    dlab += einsum('cJkB,ikac->iJaB',rvOoV,laa)
+    dlab += einsum('JCBK,iKaC->iJaB',rOVVO,lab)
+    dlab += einsum('iCkB,kJaC->iJaB',roVoV,lab)
+    dlab += einsum('cJaK,iKcB->iJaB',rvOvO,lab)
+    dlab += einsum('icak,kJcB->iJaB',rovvo,lab)
+    dlab += einsum('iCaK,JKBC->iJaB',roVvO,lbb)
+
+    Foo  = 0.5 * einsum('ilcd,cdkl->ik',laa,taa)
+    Foo +=       einsum('iLcD,cDkL->ik',lab,tab)
+    Fvv  = 0.5 * einsum('klad,cdkl->ca',laa,taa)
+    Fvv +=       einsum('kLaD,cDkL->ca',lab,tab)
+    FOO = Foo.copy()
+    FVV = Fvv.copy()
+
+    dlaa -= einsum('ik,kjab->ijab',Foo,eri_aa[:noa,:noa,noa:,noa:])
+    dlaa -= einsum('jk,ikab->ijab',Foo,eri_aa[:noa,:noa,noa:,noa:])
+    dlaa -= einsum('ca,ijcb->ijab',Fvv,eri_aa[:noa,:noa,noa:,noa:])
+    dlaa -= einsum('cb,ijac->ijab',Fvv,eri_aa[:noa,:noa,noa:,noa:])
+
+    dlab -= einsum('ik,kJaB->iJaB',Foo,eri_ab[:noa,:nob,noa:,nob:])
+    dlab -= einsum('JK,iKaB->iJaB',FOO,eri_ab[:noa,:nob,noa:,nob:])
+    dlab -= einsum('ca,iJcB->iJaB',Fvv,eri_ab[:noa,:nob,noa:,nob:])
+    dlab -= einsum('CB,iJaC->iJaB',FVV,eri_ab[:noa,:nob,noa:,nob:])
 
     dtbb = dtaa.copy()
-    return dtaa, dtab, dtbb
+    dlbb = dlaa.copy()
+    return (dtaa, dtab, dtbb), (dlaa, dlab, dlbb)
 
 def update_l(t, l, eris):
     no = t.shape[3]
