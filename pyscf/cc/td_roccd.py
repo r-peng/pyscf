@@ -258,85 +258,108 @@ def compute_rdms(t, l, normal=False, symm=True):
     dbb = daa.copy()
     return (da, db), (daa, dab, dbb)
 
-def compute_kappa_intermediates(d1, d2, eris, no):
-    nv = d1.shape[0] - no
-    h = eris.h
-    eri = eris.eri    
+def compute_kappa_intermediates(da, daa, dab, ha, eri_aa, eri_ab, noa):
+    nmoa = da.shape[0]
+    nva = nmoa - noa
 
-    Cov  = einsum('ba,aj->jb',d1[no:,no:],h[no:,:no]) 
-    Cov -= einsum('ij,bi->jb',d1[:no,:no],h[no:,:no])
-    Cov += 0.5 * einsum('pqjs,bspq->jb',eri[:,:,:no,:],d2[no:,:,:,:])
-    Cov -= 0.5 * einsum('bqrs,rsjq->jb',eri[no:,:,:,:],d2[:,:,:no,:])
+    Cov  = einsum('ba,aj->jb',da[noa:,noa:],ha[noa:,:noa]) 
+    Cov -= einsum('ij,bi->jb',da[:noa,:noa],ha[noa:,:noa])
+    Cov += 0.5 * einsum('pqjs,bspq->jb',eri_aa[:,:,:noa,:],daa[noa:,:,:,:])
+    Cov +=       einsum('pQjS,bSpQ->jb',eri_ab[:,:,:noa,:],dab[noa:,:,:,:])
+    Cov -= 0.5 * einsum('bqrs,rsjq->jb',eri_aa[noa:,:,:,:],daa[:,:,:noa,:])
+    Cov -=       einsum('bQrS,rSjQ->jb',eri_ab[noa:,:,:,:],dab[:,:,:noa,:])
 
-    Aovvo  = einsum('ba,ij->jbai',np.eye(nv),d1[:no,:no])
-    Aovvo -= einsum('ij,ba->jbai',np.eye(no),d1[no:,no:])
-    return Aovvo, Cov
+    Aovvo  = einsum('ba,ij->jbai',np.eye(nva),da[:noa,:noa])
+    Aovvo -= einsum('ij,ba->jbai',np.eye(noa),da[noa:,noa:])
 
-def compute_kappa(d1, d2, eris, no):
-    Aovvo, Cov = compute_kappa_intermediates(d1, d2, eris, no)
-    nv = d1.shape[0] - no
-    Aovvo = Aovvo.reshape(no*nv,no*nv)
-    Cov = Cov.reshape(no*nv)
+    Aovvo = Aovvo.reshape(noa*nva,noa*nva)
+    Cov = Cov.reshape(noa*nva)
     kappa = np.dot(np.linalg.inv(Aovvo),Cov)
-    kappa = kappa.reshape(nv,no)
-    kappa = np.block([[np.zeros((no,no)),-kappa.T.conj()],
-                      [kappa, np.zeros((nv,nv))]])
+    kappa = kappa.reshape(nva,noa)
+    kappa = np.block([[np.zeros((noa,noa)),-kappa.T.conj()],
+                      [kappa, np.zeros((nva,nva))]])
     return kappa
 
+def compute_kappa(d1, d2, eris, no):
+    ka = compute_kappa_intermediates(d1[0], d2[0], d2[1], 
+         eris.h[0], eris.eri[0], eris.eri[1], no[0])
+    kb = ka.copy()
+    return ka, kb
+
 def compute_energy(d1, d2, eris):
-    h = eris.h
-    eri = eris.eri    
-    e  = einsum('pq,qp',h,d1)
-    e += 0.25 * einsum('pqrs,rspq',eri,d2)
+    ha, hb = eris.h
+    eri_aa, eri_ab, eri_bb = eris.eri
+    da, db = d1
+    daa, dab, dbb = d2
+
+    e  = einsum('pq,qp',ha,da)
+    e += einsum('PQ,QP',hb,db)
+    e += 0.25 * einsum('pqrs,rspq',eri_aa,daa)
+    e += 0.25 * einsum('PQRS,RSPQ',eri_bb,dbb)
+    e +=        einsum('pQrS,rSpQ',eri_ab,dab)
     return e.real
 
-def kernel_it1(mf, maxiter=1000, step=0.03, thresh=1e-6):
-    no = sum(mf.mol.nelec)
-
 def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
-    no = sum(mf.mol.nelec)
+    noa, nob = mf.mol.nelec
     eris = ERIs(mf)
-    mo_coeff = mf.mo_coeff.copy()
-    eo = np.diag(eris.f[:no,:no])
-    ev = np.diag(eris.f[no:,no:])
-    eia = lib.direct_sum('i-a->ia', eo, ev)
+    mo_coeff = mf.mo_coeff, mf.mo_coeff
+    eoa = np.diag(eris.f[0][:noa,:noa])
+    eva = np.diag(eris.f[0][noa:,noa:])
+    eob = np.diag(eris.f[1][:nob,:nob])
+    evb = np.diag(eris.f[1][nob:,nob:])
+    eia = lib.direct_sum('i-a->ia', eoa, eva)
+    eIA = lib.direct_sum('I-A->IA', eob, evb)
     eabij = lib.direct_sum('ia+jb->abij', eia, eia)
-    t = eris.eri[no:,no:,:no,:no]/eabij
-    l = t.transpose(2,3,0,1).copy()
-    d1, d2 = compute_rdms(t, l)
+    eaBiJ = lib.direct_sum('ia+JB->aBiJ', eia, eIA)
+    taa = eris.eri[0][noa:,noa:,:noa,:noa]/eabij
+    tab = eris.eri[1][noa:,nob:,:noa,:nob]/eaBiJ
+    tbb = taa.copy()
+    laa = taa.transpose(2,3,0,1).copy()
+    lab = tab.transpose(2,3,0,1).copy()
+    lbb = tbb.transpose(2,3,0,1).copy()
+    d1, d2 = compute_rdms((taa, tab, tbb), (laa, lab, lbb))
     e = compute_energy(d1, d2, eris)
 
     converged = False
     for i in range(maxiter):
-        kappa = compute_kappa(d1, d2, eris, no)
-        U = scipy.linalg.expm(step*kappa[::2,::2]) # U = U_{old,new}
-        mo_coeff = np.dot(mo_coeff, U)
+        ka, kb = compute_kappa(d1, d2, eris, mf.mol.nelec)
+        Ua = scipy.linalg.expm(step*ka) # U = U_{old,new}
+        Ub = scipy.linalg.expm(step*kb) # U = U_{old,new}
+        mo_coeff = np.dot(mo_coeff[0], Ua), np.dot(mo_coeff[1], Ub)
         eris.ao2mo(mo_coeff)
-        dt = update_t(t, eris)
-        dl = update_l(t, l, eris)
-        t -= step * dt
-        l -= step * dl
-        d1, d2 = compute_rdms(t, l)
+        dt, dl = update_amps((taa, tab, tbb), (laa, lab, lbb), eris)
+        taa -= step * dt[0]
+        tab -= step * dt[1]
+        tbb -= step * dt[2]
+        laa -= step * dl[0]
+        lab -= step * dl[1]
+        lbb -= step * dl[2]
+        d1, d2 = compute_rdms((taa, tab, tbb), (laa, lab, lbb))
         e_new = compute_energy(d1, d2, eris)
         de, e = e_new - e, e_new
-        dnormk = np.linalg.norm(kappa)
-        dnormt = np.linalg.norm(dt)
-        dnorml = np.linalg.norm(dl)
+        dnormk  = np.linalg.norm(ka) + np.linalg.norm(kb)
+        dnormt  = np.linalg.norm(dt[0])
+        dnormt += np.linalg.norm(dt[1])
+        dnormt += np.linalg.norm(dt[2])
+        dnorml  = np.linalg.norm(dl[0])
+        dnorml += np.linalg.norm(dl[1])
+        dnorml += np.linalg.norm(dl[2])
         print('iter: {}, dk: {}, dt: {}, dl: {}, de: {}, energy: {}'.format(
               i, dnormk, dnormt, dnorml, de, e))
         if dnormk < thresh:
             converged = True
             break
-    return t, l, mo_coeff, e 
+    return (taa, tab, tbb), (laa, lab, lbb), mo_coeff, e 
 
 class ERIs:
     def __init__(self, mf):
         self.hao = mf.get_hcore().astype(complex)
         self.fao = mf.get_fock().astype(complex)
         self.eri_ao = mf.mol.intor('int2e_sph').astype(complex)
-        self.ao2mo(mf.mo_coeff)
+        self.ao2mo((mf.mo_coeff, mf.mo_coeff))
 
     def ao2mo(self, mo_coeff):
+        mo_coeff = mo_coeff[0]
         nmo = mo_coeff.shape[0]
     
         h = einsum('uv,up,vq->pq',self.hao,mo_coeff.conj(),mo_coeff)
