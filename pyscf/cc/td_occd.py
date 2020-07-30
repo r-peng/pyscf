@@ -198,38 +198,65 @@ def compute_gamma(t, l): # normal ordered, asymmetric
     return doo, dvv, doooo, doovv, dvvoo, dovvo, dvvvv 
 
 def compute_rdms(t, l, normal=False, symm=True):
-    doo, dvv = compute_gamma1(t, l)
-    doooo, doovv, dvvoo, dovvo, dvvvv = compute_gamma2(t, l)
+    doo, dvv, doooo, doovv, dvvoo, dovvo, dvvvv = compute_gamma(t, l)
+    doo, dOO = doo
+    dvv, dVV = dvv
+    doooo, doOoO, dOOOO = doooo
+    dvvvv, dvVvV, dVVVV = dvvvv
+    doovv, doOvV, dOOVV = doovv
+    dvvoo, dvVoO, dVVOO = dvvoo
+    dovvo, doVvO, dvOoV, doVoV, dvOvO, dOVVO = dovvo 
 
-    no, nv = doo.shape[0], dvv.shape[0]
-    nmo = no + nv
+    noa, nob, nva, nvb = doOvV.shape
+    nmoa, nmob = noa + nva, nob + nvb
     if not normal:
-        doooo += einsum('ki,lj->klij',np.eye(no),doo)
-        doooo += einsum('lj,ki->klij',np.eye(no),doo)
-        doooo -= einsum('li,kj->klij',np.eye(no),doo)
-        doooo -= einsum('kj,li->klij',np.eye(no),doo)
-        doooo += einsum('ki,lj->klij',np.eye(no),np.eye(no))
-        doooo -= einsum('li,kj->klij',np.eye(no),np.eye(no))
-        dovvo -= einsum('ji,ab->jabi',np.eye(no),dvv)
-        doo += np.eye(no)
+        doooo += einsum('ki,lj->klij',np.eye(noa),doo)
+        doooo += einsum('lj,ki->klij',np.eye(noa),doo)
+        doooo -= einsum('li,kj->klij',np.eye(noa),doo)
+        doooo -= einsum('kj,li->klij',np.eye(noa),doo)
+        doooo += einsum('ki,lj->klij',np.eye(noa),np.eye(noa))
+        doooo -= einsum('li,kj->klij',np.eye(noa),np.eye(noa))
 
-    d1 = np.zeros((nmo,nmo),dtype=complex)
-    d1[:no,:no] = doo.copy()
-    d1[no:,no:] = dvv.copy()
-    d2 = np.zeros((nmo,nmo,nmo,nmo),dtype=complex)
-    d2[:no,:no,:no,:no] = doooo.copy()
-    d2[:no,:no,no:,no:] = doovv.copy()
-    d2[no:,no:,:no,:no] = dvvoo.copy()
-    d2[:no,no:,no:,:no] = dovvo.copy()
-    d2[no:,:no,:no,no:] = dovvo.transpose(1,0,3,2)
-    d2[:no,no:,:no,no:] = - dovvo.transpose(0,1,3,2)
-    d2[no:,:no,no:,:no] = - dovvo.transpose(1,0,2,3)
-    d2[no:,no:,no:,no:] = dvvvv.copy()
+        doOoO += einsum('ki,lj->klij',np.eye(noa),dOO)
+        doOoO += einsum('lj,ki->klij',np.eye(nob),doo)
+        doOoO += einsum('ki,lj->klij',np.eye(noa),np.eye(nob))
 
+        dovvo -= einsum('ji,ab->jabi',np.eye(noa),dvv)
+        doVoV += einsum('ji,AB->jAiB',np.eye(noa),dVV)
+        dvOvO += einsum('JI,ab->aJbI',np.eye(nob),dvv)
+
+        doo += np.eye(noa)
+
+    da = np.zeros((nmoa,nmoa),dtype=complex)
+    da[:noa,:noa] = doo.copy()
+    da[noa:,noa:] = dvv.copy()
+    daa = np.zeros((nmoa,nmoa,nmoa,nmoa),dtype=complex)
+    daa[:noa,:noa,:noa,:noa] = doooo.copy()
+    daa[:noa,:noa,noa:,noa:] = doovv.copy()
+    daa[noa:,noa:,:noa,:noa] = dvvoo.copy()
+    daa[:noa,noa:,noa:,:noa] = dovvo.copy()
+    daa[noa:,:noa,:noa,noa:] = dovvo.transpose(1,0,3,2)
+    daa[:noa,noa:,:noa,noa:] = - dovvo.transpose(0,1,3,2)
+    daa[noa:,:noa,noa:,:noa] = - dovvo.transpose(1,0,2,3)
+    daa[noa:,noa:,noa:,noa:] = dvvvv.copy()
+    dab = np.zeros((nmoa,nmob,nmoa,nmob),dtype=complex)
+    dab[:noa,:nob,:noa,:nob] = doOoO.copy()
+    dab[:noa,:nob,noa:,nob:] = doOvV.copy()
+    dab[noa:,nob:,:noa,:nob] = dvVoO.copy()
+    dab[:noa,nob:,noa:,:nob] = doVvO.copy()
+    dab[noa:,:nob,:noa,nob:] = dvOoV.copy()
+    dab[:noa,nob:,:noa,nob:] = doVoV.copy()
+    dab[noa:,:nob,noa:,:nob] = dvOvO.copy()
+    dab[noa:,nob:,noa:,nob:] = dvVvV.copy()
+ 
     if symm:
-        d1 = 0.5 * (d1 + d1.T.conj())
-        d2 = 0.5 * (d2 + d2.transpose(2,3,0,1).conj())
-    return d1, d2
+        da = 0.5 * (da + da.T.conj())
+        daa = 0.5 * (daa + daa.transpose(2,3,0,1).conj())
+        dab = 0.5 * (dab + dab.transpose(2,3,0,1).conj())
+
+    db = da.copy()
+    dbb = daa.copy()
+    return (da, db), (daa, dab, dbb)
 
 def compute_kappa_intermediates(d1, d2, eris, no):
     nv = d1.shape[0] - no
