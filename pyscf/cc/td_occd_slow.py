@@ -300,16 +300,25 @@ class ERIs:
         self.ao2mo(mf.mo_coeff)
 
     def ao2mo(self, mo_coeff):
-        nmo = mo_coeff.shape[0]
+        moa, mob = mo_coeff
+        nmoa, nmob = moa.shape[0], mob.shape[0]
     
-        h = einsum('uv,up,vq->pq',self.hao,mo_coeff.conj(),mo_coeff)
-        self.h = sort1((h,h))
+        ha = einsum('uv,up,vq->pq',self.hao,moa.conj(),moa)
+        hb = einsum('uv,up,vq->pq',self.hao,mob.conj(),mob)
+        self.h = sort1((ha,hb))
     
-        f = einsum('uv,up,vq->pq',self.fao,mo_coeff.conj(),mo_coeff)
-        self.f = sort1((f,f))
+        fa = einsum('uv,up,vq->pq',self.fao[0],moa.conj(),moa)
+        fb = einsum('uv,up,vq->pq',self.fao[1],mob.conj(),mob)
+        self.f = sort1((fa,fb))
     
-        eri = einsum('uvxy,up,vr->prxy',self.eri_ao,mo_coeff.conj(),mo_coeff)
-        eri = einsum('prxy,xq,ys->prqs',eri,mo_coeff.conj(),mo_coeff)
-        eri = eri.transpose(0,2,1,3)
-        eri = sort2((eri, eri, eri), anti=False)
+        eri_aa = einsum('uvxy,up,vr->prxy',self.eri_ao,moa.conj(),moa)
+        eri_aa = einsum('prxy,xq,ys->prqs',eri_aa,     moa.conj(),moa)
+        eri_aa = eri_aa.transpose(0,2,1,3)
+        eri_bb = einsum('uvxy,up,vr->prxy',self.eri_ao,mob.conj(),mob)
+        eri_bb = einsum('prxy,xq,ys->prqs',eri_bb,     mob.conj(),mob)
+        eri_bb = eri_bb.transpose(0,2,1,3)
+        eri_ab = einsum('uvxy,up,vr->prxy',self.eri_ao,moa.conj(),moa)
+        eri_ab = einsum('prxy,xq,ys->prqs',eri_ab,     mob.conj(),mob)
+        eri_ab = eri_ab.transpose(0,2,1,3)
+        eri = sort2((eri_aa, eri_ab, eri_bb), anti=False)
         self.eri = eri - eri.transpose(0,1,3,2)

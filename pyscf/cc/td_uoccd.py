@@ -12,12 +12,17 @@ def update_amps(t, l, eris):
 
     Foo  = fa[:noa,:noa].copy()
     Foo += 0.5 * einsum('klcd,cdjl->kj',eri_aa[:noa,:noa,noa:,noa:],taa)
-    Foo +=       einsum('kLcD,cDjL->kj',eri_ab[:noa,:noa,noa:,noa:],tab)
+    Foo +=       einsum('kLcD,cDjL->kj',eri_ab[:noa,:nob,noa:,nob:],tab)
     Fvv  = fa[noa:,noa:].copy()
     Fvv -= 0.5 * einsum('klcd,bdkl->bc',eri_aa[:noa,:noa,noa:,noa:],taa)
-    Fvv -=       einsum('kLcD,bDkL->bc',eri_ab[:noa,:noa,noa:,noa:],tab)
-    FOO = Foo.copy()
-    FVV = Fvv.copy()
+    Fvv -=       einsum('kLcD,bDkL->bc',eri_ab[:noa,:nob,noa:,nob:],tab)
+
+    FOO  = fb[:nob,:nob].copy()
+    FOO += 0.5 * einsum('KLCD,CDJL->KJ',eri_bb[:nob,:nob,nob:,nob:],tbb)
+    FOO +=       einsum('lKdC,dClJ->KJ',eri_ab[:noa,:nob,noa:,nob:],tab)
+    FVV  = fb[nob:,nob:].copy()
+    FVV -= 0.5 * einsum('KLCD,BDKL->BC',eri_bb[:nob,:nob,nob:,nob:],tbb)
+    FVV -=       einsum('lKdC,dBlK->BC',eri_ab[:noa,:nob,noa:,nob:],tab)
 
     dtaa  = eri_aa[noa:,noa:,:noa,:noa].copy()
     dtaa += einsum('bc,acij->abij',Fvv,taa)
@@ -31,6 +36,12 @@ def update_amps(t, l, eris):
     dtab -= einsum('KJ,aBiK->aBiJ',FOO,tab)
     dtab -= einsum('ki,aBkJ->aBiJ',Foo,tab)
 
+    dtbb  = eri_bb[nob:,nob:,:nob,:nob].copy()
+    dtbb += einsum('BC,ACIJ->ABIJ',FVV,tbb)
+    dtbb += einsum('AC,CBIJ->ABIJ',FVV,tbb)
+    dtbb -= einsum('KJ,ABIK->ABIJ',FOO,tbb)
+    dtbb -= einsum('KI,ABKJ->ABIJ',FOO,tbb)
+
     dlaa  = eri_aa[:noa,:noa,noa:,noa:].copy()
     dlaa += einsum('cb,ijac->ijab',Fvv,laa)
     dlaa += einsum('ca,ijcb->ijab',Fvv,laa)
@@ -43,30 +54,49 @@ def update_amps(t, l, eris):
     dlab -= einsum('JK,iKaB->iJaB',FOO,lab)
     dlab -= einsum('ik,kJaB->iJaB',Foo,lab)
 
+    dlbb  = eri_bb[:nob,:nob,nob:,nob:].copy()
+    dlbb += einsum('CB,IJAC->IJAB',FVV,lbb)
+    dlbb += einsum('CA,IJCB->IJAB',FVV,lbb)
+    dlbb -= einsum('JK,IKAB->IJAB',FOO,lbb)
+    dlbb -= einsum('IK,KJAB->IJAB',FOO,lbb)
+
     loooo  = eri_aa[:noa,:noa,:noa,:noa].copy()
     loooo += 0.5 * einsum('klcd,cdij->klij',eri_aa[:noa,:noa,noa:,noa:],taa)
     loOoO  = eri_ab[:noa,:nob,:noa,:nob].copy()
     loOoO +=       einsum('kLcD,cDiJ->kLiJ',eri_ab[:noa,:nob,noa:,nob:],tab)
+    lOOOO  = eri_bb[:nob,:nob,:nob,:nob].copy()
+    lOOOO += 0.5 * einsum('KLCD,CDIJ->KLIJ',eri_bb[:nob,:nob,nob:,nob:],tbb)
     lvvvv  = eri_aa[noa:,noa:,noa:,noa:].copy()
     lvvvv += 0.5 * einsum('klab,cdkl->cdab',eri_aa[:noa,:noa,noa:,noa:],taa)
     lvVvV  = eri_ab[noa:,nob:,noa:,nob:].copy()
     lvVvV +=       einsum('kLaB,cDkL->cDaB',eri_ab[:noa,:nob,noa:,nob:],tab)
+    lVVVV  = eri_bb[nob:,nob:,nob:,nob:].copy()
+    lVVVV += 0.5 * einsum('KLAB,CDKL->CDAB',eri_bb[:nob,:nob,nob:,nob:],tbb)
 
     dtaa += 0.5 * einsum('abcd,cdij->abij',eri_aa[noa:,noa:,noa:,noa:],taa)
     dtab +=       einsum('aBcD,cDiJ->aBiJ',eri_ab[noa:,nob:,noa:,nob:],tab)
+    dtbb += 0.5 * einsum('ABCD,CDIJ->ABIJ',eri_bb[nob:,nob:,nob:,nob:],tbb)
     dtaa += 0.5 * einsum('klij,abkl->abij',loooo,taa)
     dtab +=       einsum('kLiJ,aBkL->aBiJ',loOoO,tab)
+    dtbb += 0.5 * einsum('KLIJ,ABKL->ABIJ',lOOOO,tbb)
 
     dlaa += 0.5 * einsum('cdab,ijcd->ijab',lvvvv,laa)
     dlab +=       einsum('cDaB,iJcD->iJaB',lvVvV,lab)
+    dlbb += 0.5 * einsum('CDAB,IJCD->IJAB',lVVVV,lbb)
     dlaa += 0.5 * einsum('ijkl,klab->ijab',loooo,laa)
     dlab +=       einsum('iJkL,kLaB->iJaB',loOoO,lab)
+    dlbb += 0.5 * einsum('IJKL,KLAB->IJAB',lOOOO,lbb)
 
     tmp  = einsum('bkjc,acik->abij',eri_aa[noa:,:noa,:noa,noa:],taa)
     tmp += einsum('bKjC,aCiK->abij',eri_ab[noa:,:nob,:noa,nob:],tab)
     tmp += tmp.transpose(1,0,3,2)
     tmp -= tmp.transpose(0,1,3,2)
     dtaa += tmp.copy()
+    tmp  = einsum('BKJC,ACIK->ABIJ',eri_bb[nob:,:nob,:nob,nob:],tbb)
+    tmp += einsum('kBcJ,cAkI->ABIJ',eri_ab[:noa,nob:,noa:,:nob],tab)
+    tmp += tmp.transpose(1,0,3,2)
+    tmp -= tmp.transpose(0,1,3,2)
+    dtbb += tmp.copy()
     dtab += einsum('kBcJ,acik->aBiJ',eri_ab[:noa,nob:,noa:,:nob],taa)
     dtab += einsum('KBCJ,aCiK->aBiJ',eri_bb[:nob,nob:,nob:,:nob],tab)
     dtab -= einsum('kBiC,aCkJ->aBiJ',eri_ab[:noa,nob:,:noa,nob:],tab)
@@ -79,6 +109,11 @@ def update_amps(t, l, eris):
     tmp += tmp.transpose(1,0,3,2)
     tmp -= tmp.transpose(0,1,3,2)
     dlaa += tmp.copy()
+    tmp  = einsum('JCBK,IKAC->IJAB',eri_bb[:nob,nob:,nob:,:nob],lbb)
+    tmp += einsum('cJkB,kIcA->IJAB',eri_ab[noa:,:nob,:noa,nob:],lab)
+    tmp += tmp.transpose(1,0,3,2)
+    tmp -= tmp.transpose(0,1,3,2)
+    dlbb += tmp.copy()
     dlab += einsum('cJkB,ikac->iJaB',eri_ab[noa:,:nob,:noa,nob:],laa)
     dlab += einsum('CJKB,iKaC->iJaB',eri_bb[nob:,:nob,:nob,nob:],lab)
     dlab -= einsum('cJaK,iKcB->iJaB',eri_ab[noa:,:nob,noa:,:nob],lab)
@@ -92,14 +127,19 @@ def update_amps(t, l, eris):
     rvOoV += einsum('KLCD,bDjL->bKjC',eri_bb[:nob,:nob,nob:,nob:],tab)
     roVvO  = einsum('kLcD,BDJL->kBcJ',eri_ab[:noa,:nob,noa:,nob:],tbb)
     roVvO += einsum('klcd,dBlJ->kBcJ',eri_aa[:noa,:noa,noa:,noa:],tab)
-    rOVVO  = rovvo.copy()
     roVoV  = einsum('kLdC,dBiL->kBiC',eri_ab[:noa,:nob,noa:,nob:],tab)
     rvOvO  = einsum('lKcD,bDlI->bKcI',eri_ab[:noa,:nob,noa:,nob:],tab)
+    rOVVO  = einsum('KLCD,BDJL->KBCJ',eri_bb[:nob,:nob,nob:,nob:],tbb)
+    rOVVO += einsum('lKdC,dBlJ->KBCJ',eri_ab[:noa,:nob,noa:,nob:],tab)
 
     tmp  = einsum('kbcj,acik->abij',rovvo,taa)
     tmp += einsum('bKjC,aCiK->abij',rvOoV,tab)
     tmp -= tmp.transpose(0,1,3,2)
     dtaa += tmp.copy()
+    tmp  = einsum('KBCJ,ACIK->ABIJ',rOVVO,tbb)
+    tmp += einsum('kBcJ,cAkI->ABIJ',roVvO,tab)
+    tmp -= tmp.transpose(0,1,3,2)
+    dtbb += tmp.copy()
     dtab += einsum('kBcJ,acik->aBiJ',roVvO,taa)
     dtab += einsum('KBCJ,aCiK->aBiJ',rOVVO,tab)
     dtab += einsum('kBiC,aCkJ->aBiJ',roVoV,tab)
@@ -109,7 +149,11 @@ def update_amps(t, l, eris):
     tmp += tmp.transpose(1,0,3,2)
     tmp -= tmp.transpose(0,1,3,2)
     dlaa += tmp.copy()
-
+    tmp  = einsum('JCBK,IKAC->IJAB',rOVVO,lbb)
+    tmp += einsum('cJkB,kIcA->IJAB',rvOoV,lab)
+    tmp += tmp.transpose(1,0,3,2)
+    tmp -= tmp.transpose(0,1,3,2)
+    dlbb += tmp.copy()
     dlab += einsum('cJkB,ikac->iJaB',rvOoV,laa)
     dlab += einsum('JCBK,iKaC->iJaB',rOVVO,lab)
     dlab += einsum('iCkB,kJaC->iJaB',roVoV,lab)
@@ -121,8 +165,10 @@ def update_amps(t, l, eris):
     Foo +=       einsum('iLcD,cDkL->ik',lab,tab)
     Fvv  = 0.5 * einsum('klad,cdkl->ca',laa,taa)
     Fvv +=       einsum('kLaD,cDkL->ca',lab,tab)
-    FOO = Foo.copy()
-    FVV = Fvv.copy()
+    FOO  = 0.5 * einsum('ILCD,CDKL->IK',lbb,tbb)
+    FOO +=       einsum('lIdC,dClK->IK',lab,tab)
+    FVV  = 0.5 * einsum('KLAD,CDKL->CA',lbb,tbb)
+    FVV +=       einsum('lKdA,dClK->CA',lab,tab)
 
     dlaa -= einsum('ik,kjab->ijab',Foo,eri_aa[:noa,:noa,noa:,noa:])
     dlaa -= einsum('jk,ikab->ijab',Foo,eri_aa[:noa,:noa,noa:,noa:])
@@ -134,8 +180,10 @@ def update_amps(t, l, eris):
     dlab -= einsum('ca,iJcB->iJaB',Fvv,eri_ab[:noa,:nob,noa:,nob:])
     dlab -= einsum('CB,iJaC->iJaB',FVV,eri_ab[:noa,:nob,noa:,nob:])
 
-    dtbb = dtaa.copy()
-    dlbb = dlaa.copy()
+    dlbb -= einsum('IK,KJAB->IJAB',FOO,eri_bb[:nob,:nob,nob:,nob:])
+    dlbb -= einsum('JK,IKAB->IJAB',FOO,eri_bb[:nob,:nob,nob:,nob:])
+    dlbb -= einsum('CA,IJCB->IJAB',FVV,eri_bb[:nob,:nob,nob:,nob:])
+    dlbb -= einsum('CB,IJAC->IJAB',FVV,eri_bb[:nob,:nob,nob:,nob:])
     return (dtaa, dtab, dtbb), (dlaa, dlab, dlbb)
 
 def compute_gamma(t, l): # normal ordered, asymmetric
@@ -145,9 +193,12 @@ def compute_gamma(t, l): # normal ordered, asymmetric
     dvv +=       einsum('iKaC,bCiK->ba',lab,tab)
     doo  = 0.5 * einsum('jkac,acik->ji',laa,taa)
     doo +=       einsum('jKaC,aCiK->ji',lab,tab)
+    dVV  = 0.5 * einsum('IKAC,BCIK->BA',lbb,tbb)
+    dVV +=       einsum('kIcA,cBkI->BA',lab,tab)
+    dOO  = 0.5 * einsum('JKAC,ACIK->JI',lbb,tbb)
+    dOO +=       einsum('kJcA,cAkI->JI',lab,tab)
     doo *= - 1.0
-    dVV = dvv.copy()
-    dOO = doo.copy()
+    dOO *= - 1.0
 
     dovvo  = einsum('jkbc,acik->jabi',laa,taa)
     dovvo += einsum('jKbC,aCiK->jabi',lab,tab)
@@ -157,14 +208,15 @@ def compute_gamma(t, l): # normal ordered, asymmetric
     dvOoV += einsum('JKBC,aCiK->aJiB',lbb,tab)
     doVoV  = - einsum('jKcB,cAiK->jAiB',lab,tab)
     dvOvO  = - einsum('kJbC,aCkI->aJbI',lab,tab) 
-    dOVVO  = dovvo.copy()
+    dOVVO  = einsum('JKBC,ACIK->JABI',lbb,tbb)
+    dOVVO += einsum('kJcB,cAkI->JABI',lab,tab)
 
     dvvvv = 0.5 * einsum('ijab,cdij->cdab',laa,taa)
     dvVvV =       einsum('iJaB,cDiJ->cDaB',lab,tab)
+    dVVVV = 0.5 * einsum('IJAB,CDIJ->CDAB',lbb,tbb)
     doooo = 0.5 * einsum('klab,abij->klij',laa,taa)
     doOoO =       einsum('kLaB,aBiJ->kLiJ',lab,tab)
-    dVVVV = dvvvv.copy()
-    dOOOO = doooo.copy()
+    dOOOO = 0.5 * einsum('KLAB,ABIJ->KLIJ',lbb,tbb)
 
     dvvoo = taa.copy()
     tmp  = einsum('ladi,bdjl->abij',dovvo,taa)
@@ -186,7 +238,17 @@ def compute_gamma(t, l): # normal ordered, asymmetric
     dvVoO += einsum('ki,aBkJ->aBiJ',doo,tab)
     dvVoO += einsum('KJ,aBiK->aBiJ',dOO,tab)
     dvVoO += einsum('kLiJ,aBkL->aBiJ',doOoO,tab) 
-    dVVOO = dvvoo.copy()
+
+    dVVOO = tbb.copy()
+    tmp  = einsum('LADI,BDJL->ABIJ',dOVVO,tbb)
+    tmp += einsum('lAdI,dBlJ->ABIJ',doVvO,tab)
+    tmp -= tmp.transpose(0,1,3,2)
+    dVVOO += tmp.copy()
+    dVVOO -= einsum('AC,CBIJ->ABIJ',dVV,tbb)
+    dVVOO -= einsum('BC,ACIJ->ABIJ',dVV,tbb)
+    dVVOO += einsum('KI,ABKJ->ABIJ',dOO,tbb)
+    dVVOO += einsum('KJ,ABIK->ABIJ',dOO,tbb)
+    dVVOO += 0.5 * einsum('KLIJ,ABKL->ABIJ',dOOOO,tbb)
 
     doo = doo, dOO
     dvv = dvv, dVV
@@ -221,24 +283,45 @@ def compute_rdms(t, l, normal=False, symm=True):
         doOoO += einsum('lj,ki->klij',np.eye(nob),doo)
         doOoO += einsum('ki,lj->klij',np.eye(noa),np.eye(nob))
 
+        dOOOO += einsum('ki,lj->klij',np.eye(nob),dOO)
+        dOOOO += einsum('lj,ki->klij',np.eye(nob),dOO)
+        dOOOO -= einsum('li,kj->klij',np.eye(nob),dOO)
+        dOOOO -= einsum('kj,li->klij',np.eye(nob),dOO)
+        dOOOO += einsum('ki,lj->klij',np.eye(nob),np.eye(nob))
+        dOOOO -= einsum('li,kj->klij',np.eye(nob),np.eye(nob))
+
         dovvo -= einsum('ji,ab->jabi',np.eye(noa),dvv)
         doVoV += einsum('ji,AB->jAiB',np.eye(noa),dVV)
         dvOvO += einsum('JI,ab->aJbI',np.eye(nob),dvv)
+        dOVVO -= einsum('ji,ab->jabi',np.eye(nob),dVV)
 
         doo += np.eye(noa)
+        dOO += np.eye(nob)
 
     da = np.zeros((nmoa,nmoa),dtype=complex)
+    db = np.zeros((nmob,nmob),dtype=complex)
     da[:noa,:noa] = doo.copy()
     da[noa:,noa:] = dvv.copy()
+    db[:nob,:nob] = dOO.copy()
+    db[nob:,nob:] = dVV.copy()
     daa = np.zeros((nmoa,nmoa,nmoa,nmoa),dtype=complex)
     daa[:noa,:noa,:noa,:noa] = doooo.copy()
     daa[:noa,:noa,noa:,noa:] = doovv.copy()
     daa[noa:,noa:,:noa,:noa] = dvvoo.copy()
     daa[:noa,noa:,noa:,:noa] = dovvo.copy()
-    daa[noa:,:noa,:noa,noa:] = dovvo.transpose(1,0,3,2)
-    daa[:noa,noa:,:noa,noa:] = - dovvo.transpose(0,1,3,2)
-    daa[noa:,:noa,noa:,:noa] = - dovvo.transpose(1,0,2,3)
+    daa[noa:,:noa,:noa,noa:] =   dovvo.transpose(1,0,3,2).copy() 
+    daa[:noa,noa:,:noa,noa:] = - dovvo.transpose(0,1,3,2).copy() 
+    daa[noa:,:noa,noa:,:noa] = - dovvo.transpose(1,0,2,3).copy() 
     daa[noa:,noa:,noa:,noa:] = dvvvv.copy()
+    dbb = np.zeros((nmob,nmob,nmob,nmob),dtype=complex)
+    dbb[:nob,:nob,:nob,:nob] = dOOOO.copy()
+    dbb[:nob,:nob,nob:,nob:] = dOOVV.copy()
+    dbb[nob:,nob:,:nob,:nob] = dVVOO.copy()
+    dbb[:nob,nob:,nob:,:nob] = dOVVO.copy()
+    dbb[nob:,:nob,:nob,nob:] =   dOVVO.transpose(1,0,3,2).copy() 
+    dbb[:nob,nob:,:nob,nob:] = - dOVVO.transpose(0,1,3,2).copy() 
+    dbb[nob:,:nob,nob:,:nob] = - dOVVO.transpose(1,0,2,3).copy() 
+    dbb[nob:,nob:,nob:,nob:] = dVVVV.copy()
     dab = np.zeros((nmoa,nmob,nmoa,nmob),dtype=complex)
     dab[:noa,:nob,:noa,:nob] = doOoO.copy()
     dab[:noa,:nob,noa:,nob:] = doOvV.copy()
@@ -251,11 +334,10 @@ def compute_rdms(t, l, normal=False, symm=True):
  
     if symm:
         da = 0.5 * (da + da.T.conj())
+        db = 0.5 * (db + db.T.conj())
         daa = 0.5 * (daa + daa.transpose(2,3,0,1).conj())
+        dbb = 0.5 * (dbb + dbb.transpose(2,3,0,1).conj())
         dab = 0.5 * (dab + dab.transpose(2,3,0,1).conj())
-
-    db = da.copy()
-    dbb = daa.copy()
     return (da, db), (daa, dab, dbb)
 
 def compute_kappa_intermediates(da, daa, dab, ha, eri_aa, eri_ab, noa):
@@ -283,7 +365,8 @@ def compute_kappa_intermediates(da, daa, dab, ha, eri_aa, eri_ab, noa):
 def compute_kappa(d1, d2, eris, no):
     ka = compute_kappa_intermediates(d1[0], d2[0], d2[1], 
          eris.h[0], eris.eri[0], eris.eri[1], no[0])
-    kb = ka.copy()
+    kb = compute_kappa_intermediates(d1[1], d2[2], d2[1].transpose(1,0,3,2), 
+         eris.h[1], eris.eri[2], eris.eri[1].transpose(1,0,3,2), no[1])
     return ka, kb
 
 def compute_energy(d1, d2, eris):
@@ -302,7 +385,7 @@ def compute_energy(d1, d2, eris):
 def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
     noa, nob = mf.mol.nelec
     eris = ERIs(mf)
-    mo_coeff = mf.mo_coeff, mf.mo_coeff
+    mo_coeff = mf.mo_coeff
     eoa = np.diag(eris.f[0][:noa,:noa])
     eva = np.diag(eris.f[0][noa:,noa:])
     eob = np.diag(eris.f[1][:nob,:nob])
@@ -311,9 +394,10 @@ def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
     eIA = lib.direct_sum('I-A->IA', eob, evb)
     eabij = lib.direct_sum('ia+jb->abij', eia, eia)
     eaBiJ = lib.direct_sum('ia+JB->aBiJ', eia, eIA)
+    eABIJ = lib.direct_sum('IA+JB->ABIJ', eIA, eIA)
     taa = eris.eri[0][noa:,noa:,:noa,:noa]/eabij
     tab = eris.eri[1][noa:,nob:,:noa,:nob]/eaBiJ
-    tbb = taa.copy()
+    tbb = eris.eri[2][nob:,nob:,:nob,:nob]/eABIJ
     laa = taa.transpose(2,3,0,1).copy()
     lab = tab.transpose(2,3,0,1).copy()
     lbb = tbb.transpose(2,3,0,1).copy()
@@ -356,20 +440,29 @@ class ERIs:
         self.hao = mf.get_hcore().astype(complex)
         self.fao = mf.get_fock().astype(complex)
         self.eri_ao = mf.mol.intor('int2e_sph').astype(complex)
-        self.ao2mo((mf.mo_coeff, mf.mo_coeff))
+        self.ao2mo(mf.mo_coeff)
 
     def ao2mo(self, mo_coeff):
-        mo_coeff = mo_coeff[0]
-        nmo = mo_coeff.shape[0]
+        moa, mob = mo_coeff
+        nmoa, nmob = moa.shape[0], mob.shape[0]
     
-        h = einsum('uv,up,vq->pq',self.hao,mo_coeff.conj(),mo_coeff)
-        self.h = h, h
+        ha = einsum('uv,up,vq->pq',self.hao,moa.conj(),moa)
+        hb = einsum('uv,up,vq->pq',self.hao,mob.conj(),mob)
+        self.h = ha, hb
     
-        f = einsum('uv,up,vq->pq',self.fao,mo_coeff.conj(),mo_coeff)
-        self.f = f, f
+        fa = einsum('uv,up,vq->pq',self.fao[0],moa.conj(),moa)
+        fb = einsum('uv,up,vq->pq',self.fao[1],mob.conj(),mob)
+        self.f = fa, fb
     
-        eri = einsum('uvxy,up,vr->prxy',self.eri_ao,mo_coeff.conj(),mo_coeff)
-        eri = einsum('prxy,xq,ys->prqs',eri,mo_coeff.conj(),mo_coeff)
-        eri = eri.transpose(0,2,1,3)
-        eri_aa = eri - eri.transpose(0,1,3,2)
-        self.eri = eri_aa.copy(), eri.copy(), eri_aa.copy()
+        eri_aa = einsum('uvxy,up,vr->prxy',self.eri_ao,moa.conj(),moa)
+        eri_aa = einsum('prxy,xq,ys->prqs',eri_aa,     moa.conj(),moa)
+        eri_aa = eri_aa.transpose(0,2,1,3)
+        eri_aa = eri_aa - eri_aa.transpose(0,1,3,2)
+        eri_bb = einsum('uvxy,up,vr->prxy',self.eri_ao,mob.conj(),mob)
+        eri_bb = einsum('prxy,xq,ys->prqs',eri_bb,     mob.conj(),mob)
+        eri_bb = eri_bb.transpose(0,2,1,3)
+        eri_bb = eri_bb - eri_bb.transpose(0,1,3,2)
+        eri_ab = einsum('uvxy,up,vr->prxy',self.eri_ao,moa.conj(),moa)
+        eri_ab = einsum('prxy,xq,ys->prqs',eri_ab,     mob.conj(),mob)
+        eri_ab = eri_ab.transpose(0,2,1,3)
+        self.eri = eri_aa.copy(), eri_ab.copy(), eri_bb.copy()
