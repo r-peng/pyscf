@@ -9,11 +9,14 @@ def update_amps(t, l, eris):
     t_ = t - t.transpose(0,1,3,2)
     l_ = l - l.transpose(0,1,3,2)
     eri_ = eri - eri.transpose(0,1,3,2)
+    f  = eris.h.copy()
+    f += 2.0 * einsum('piqi->pq',eri[:,:no,:,:no])
+    f -= einsum('piiq->pq',eri[:,:no,:no,:])
 
-    Foo  = eris.f[:no,:no].copy()
+    Foo  = f[:no,:no].copy()
     Foo += 0.5 * einsum('klcd,cdjl->kj',eri_[:no,:no,no:,no:],t_)
     Foo +=       einsum('klcd,cdjl->kj',eri[:no,:no,no:,no:],t)
-    Fvv  = eris.f[no:,no:].copy()
+    Fvv  = f[no:,no:].copy()
     Fvv -= 0.5 * einsum('klcd,bdkl->bc',eri_[:no,:no,no:,no:],t_)
     Fvv -=       einsum('klcd,bdkl->bc',eri[:no,:no,no:,no:],t)
 
@@ -163,8 +166,12 @@ def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
     no = mf.mol.nelec[0]
     eris = ERIs(mf)
     mo_coeff = mf.mo_coeff
-    eoa = np.diag(eris.f[:no,:no])
-    eva = np.diag(eris.f[no:,no:])
+    eris.ao2mo(mo_coeff)
+    f  = eris.h.copy()
+    f += 2.0 * einsum('piqi->pq',eris.eri[:,:no,:,:no])
+    f -= einsum('piiq->pq',eris.eri[:,:no,:no,:])
+    eoa = np.diag(f[:no,:no])
+    eva = np.diag(f[no:,no:])
     eia = lib.direct_sum('i-a->ia', eoa, eva)
     eabij = lib.direct_sum('ia+jb->abij', eia, eia)
     t = eris.eri[no:,no:,:no,:no]/eabij
@@ -197,14 +204,11 @@ def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
 class ERIs:
     def __init__(self, mf):
         self.hao = mf.get_hcore().astype(complex)
-        self.fao = mf.get_fock().astype(complex)
         self.eri_ao = mf.mol.intor('int2e_sph').astype(complex)
-        self.ao2mo(mf.mo_coeff)
 
     def ao2mo(self, mo_coeff):
         nmo = mo_coeff.shape[0]
         self.h = einsum('uv,up,vq->pq',self.hao,mo_coeff.conj(),mo_coeff)
-        self.f = einsum('uv,up,vq->pq',self.fao,mo_coeff.conj(),mo_coeff)
         eri = einsum('uvxy,up,vr->prxy',self.eri_ao,mo_coeff.conj(),mo_coeff)
         eri = einsum('prxy,xq,ys->prqs',eri,mo_coeff.conj(),mo_coeff)
         self.eri = eri.transpose(0,2,1,3).copy()

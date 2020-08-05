@@ -28,8 +28,9 @@ def sort2(tup, anti):
 
 def update_t(t, eris):
     no = t.shape[3]
-    f = eris.f.copy()
     eri = eris.eri.copy()
+    f  = eris.h.copy()
+    f += einsum('piqi->pq',eri[:,:no,:,:no])
 
     Foo  = f[:no,:no].copy()
     Foo += 0.5 * einsum('klcd,cdjl->kj',eri[:no,:no,no:,no:],t)
@@ -57,8 +58,9 @@ def update_t(t, eris):
 
 def update_l(t, l, eris):
     no = t.shape[3]
-    f = eris.f.copy()
     eri = eris.eri.copy()
+    f  = eris.h.copy()
+    f += einsum('piqi->pq',eri[:,:no,:,:no])
 
     Foo  = f[:no,:no].copy()
     Foo += 0.5 * einsum('ilcd,cdkl->ik',eri[:no,:no,no:,no:],t)
@@ -185,119 +187,53 @@ def compute_energy(d1, d2, eris):
     e += 0.25 * einsum('pqrs,rspq',eris.eri,d2)
     return e.real
 
-def kernel_it1(mf, maxiter=1000, step=0.03, thresh=1e-6):
-    no = sum(mf.mol.nelec)
+def ao2mo(Aao, mo_coeff):
+    moa, mob = mo_coeff
+    Aa = einsum('uv,up,vq->pq',Aao,moa.conj(),moa)
+    Ab = einsum('uv,up,vq->pq',Aao,mob.conj(),mob)
+    return sort1((Aa,Ab))
 
-    def kernel_t(eris):
-        eo = np.diag(eris.f[:no,:no])
-        ev = np.diag(eris.f[no:,no:])
-        eia = lib.direct_sum('i-a->ia', eo, ev)
-        eabij = lib.direct_sum('ia+jb->abij', eia, eia)
-        t = eris.eri[no:,no:,:no,:no]/eabij
+def compute_HA(A, d1, d2, eris):
+    ave  = einsum('pq,qv,vp',eris.h,A,d1)
+    ave -= einsum('pq,up,qu',eris.h,A,d1)
+    tmp = einsum('pqus,uv->pqvs',eris.eri,A)
+    ave += 0.5 * einsum('pqvs,vspq',tmp,d2)
+    tmp = einsum('vqrs,uv->uqrs',eris.eri,A)
+    ave -= 0.5 * einsum('uqrs,rsuq',tmp,d2)
+    return ave
 
-        converged = False
-        for i in range(maxiter):
-            dt = update_t(t, eris)
-            dnorm = np.linalg.norm(dt)
-            t -= step * dt
-#            print('iter: {}, dnorm: {}'.format(i, dnorm))
-            if dnorm < thresh*100:
-                converged = True
-                break
-        if not converged: 
-            print('t amplitude not converged!')
-        return t
-
-    def kernel_l(eris, t):
-        l = t.transpose(2,3,0,1).copy()
-
-        converged = False
-        for i in range(maxiter):
-            dl = update_l(t, l, eris)
-            dnorm = np.linalg.norm(dl)
-            l -= step * dl
-#            print('iter: {}, dnorm: {}'.format(i, dnorm))
-            if dnorm < thresh*100:
-                converged = True
-                break
-        if not converged: 
-            print('l amplitude not converged!')
-        return l
-
-    def compute_energy(eris, t):
-        f = eris.f
-        eri = eris.eri
-
-        e  = einsum('ii',f[:no,:no])
-        e -= 0.5 * einsum('ijij',eri[:no,:no,:no,:no])
-        e += 0.25 * einsum('ijab,abij',eri[:no,:no,no:,no:],t)
-        return e.real
-
-
-    mo_coeff = mf.mo_coeff.copy()
-    e = mf.energy_elec()[0]
+def kernel_rt(mf, t, l, mo_coeff, maxiter=50, step=0.03):
     eris = ERIs(mf)
-
-    converged = False
-    for i in range(maxiter):
-        t = kernel_t(eris)
-        l = kernel_l(eris, t)
-        e_new = compute_energy(eris, t)
-        de, e = e_new - e, e_new
-        if abs(de) < thresh:
-            converged = True
-            break
-        d1, d2 = compute_rdms(t, l)
-        kappa = compute_kappa(d1, d2, eris, no)
-        dnorm = np.linalg.norm(kappa)
-        print('iter: {}, dnorm: {}, de: {}, energy: {}'.format(i, dnorm, de, e))
-        U = scipy.linalg.expm(step*kappa[::2,::2]) # U = U_{old,new}
-        mo_coeff = np.dot(mo_coeff, U)
-        eris.ao2mo(mo_coeff)
-    return t, l, mo_coeff, e 
-
-def kernel_it2(mf, maxiter=1000, step=0.03, thresh=1e-8):
-    no = sum(mf.mol.nelec)
-    eris = ERIs(mf)
-    mo_coeff = mf.mo_coeff.copy()
-    eo = np.diag(eris.f[:no,:no])
-    ev = np.diag(eris.f[no:,no:])
-    eia = lib.direct_sum('i-a->ia', eo, ev)
-    eabij = lib.direct_sum('ia+jb->abij', eia, eia)
-    t = eris.eri[no:,no:,:no,:no]/eabij
-    l = t.transpose(2,3,0,1).copy()
+    eris.ao2mo(mo_coeff)
     d1, d2 = compute_rdms(t, l)
-    e = compute_energy(d1, d2, eris)
-
-    converged = False
+    no = l.shape[0]
+    nao = mf.mol.nao_nr()
+    Aao = np.random.rand(nao,nao)
+    Aao += Aao.T.conj()
+    A = ao2mo(Aao, mo_coeff)
+    A_ave = einsum('pq,qp',A,d1)
     for i in range(maxiter):
-        kappa = compute_kappa(d1, d2, eris, no)
-        U = scipy.linalg.expm(step*kappa[::2,::2]) # U = U_{old,new}
-        mo_coeff = np.dot(mo_coeff, U)
+        kappa = 1j * compute_kappa(d1, d2, eris, no)
+        Ua = scipy.linalg.expm(step*kappa[ ::2, ::2]) # U = U_{old,new}
+        Ub = scipy.linalg.expm(step*kappa[1::2,1::2]) # U = U_{old,new}
+        mo_coeff = np.dot(mo_coeff[0], Ua), np.dot(mo_coeff[1], Ub)
         eris.ao2mo(mo_coeff)
         dt = update_t(t, eris)
         dl = update_l(t, l, eris)
-        t -= step * dt
-        l -= step * dl
+        t -= 1j * step * dt
+        l += 1j * step * dl
         d1, d2 = compute_rdms(t, l)
-        e_new = compute_energy(d1, d2, eris)
-        de, e = e_new - e, e_new
-        dnormk = np.linalg.norm(kappa)
-        dnormt = np.linalg.norm(dt)
-        dnorml = np.linalg.norm(dl)
-        print('iter: {}, dk: {}, dt: {}, dl: {}, de: {}, energy: {}'.format(
-              i, dnormk, dnormt, dnorml, de, e))
-        if dnormk < thresh:
-            converged = True
-            break
-    return t, l, mo_coeff, e 
+        A = ao2mo(Aao, mo_coeff)
+        A_ave_new = einsum('pq,qp',A,d1)
+        HA = compute_HA(A, d1, d2, eris)
+        dA_ave, A_ave = A_ave_new - A_ave, A_ave_new
+        error = dA_ave - 1j * step * HA
+        print('iter: {}, error: {}'.format(i, abs(error)))
 
 class ERIs:
     def __init__(self, mf):
         self.hao = mf.get_hcore()
-        self.fao = mf.get_fock()
         self.eri_ao = mf.mol.intor('int2e_sph')
-        self.ao2mo(mf.mo_coeff)
 
     def ao2mo(self, mo_coeff):
         moa, mob = mo_coeff
@@ -306,10 +242,6 @@ class ERIs:
         ha = einsum('uv,up,vq->pq',self.hao,moa.conj(),moa)
         hb = einsum('uv,up,vq->pq',self.hao,mob.conj(),mob)
         self.h = sort1((ha,hb))
-    
-        fa = einsum('uv,up,vq->pq',self.fao[0],moa.conj(),moa)
-        fb = einsum('uv,up,vq->pq',self.fao[1],mob.conj(),mob)
-        self.f = sort1((fa,fb))
     
         eri_aa = einsum('uvxy,up,vr->prxy',self.eri_ao,moa.conj(),moa)
         eri_aa = einsum('prxy,xq,ys->prqs',eri_aa,     moa.conj(),moa)

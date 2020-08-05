@@ -6,9 +6,13 @@ einsum = lib.einsum
 def update_amps(t, l, eris):
     taa, tab, tbb = t
     laa, lab, lbb = l
-    fa, fb = eris.f
     eri_aa, eri_ab, eri_bb = eris.eri
     _, _, noa, nob = tab.shape
+    fa, fb = eris.h[0].copy(), eris.h[1].copy()
+    fa += einsum('piqi->pq',eri_aa[:,:noa,:,:noa])
+    fa += einsum('pIqI->pq',eri_ab[:,:nob,:,:nob])
+    fb += einsum('PIQI->PQ',eri_bb[:,:nob,:,:nob])
+    fb += einsum('iPiQ->PQ',eri_ab[:noa,:,:noa,:])
 
     Foo  = fa[:noa,:noa].copy()
     Foo += 0.5 * einsum('klcd,cdjl->kj',eri_aa[:noa,:noa,noa:,noa:],taa)
@@ -386,10 +390,16 @@ def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
     noa, nob = mf.mol.nelec
     eris = ERIs(mf)
     mo_coeff = mf.mo_coeff
-    eoa = np.diag(eris.f[0][:noa,:noa])
-    eva = np.diag(eris.f[0][noa:,noa:])
-    eob = np.diag(eris.f[1][:nob,:nob])
-    evb = np.diag(eris.f[1][nob:,nob:])
+    eris.ao2mo(mf.mo_coeff)
+    fa, fb = eris.h[0].copy(), eris.h[1].copy()
+    fa += einsum('piqi->pq',eris.eri[0][:,:noa,:,:noa])
+    fa += einsum('pIqI->pq',eris.eri[1][:,:nob,:,:nob])
+    fb += einsum('PIQI->PQ',eris.eri[2][:,:nob,:,:nob])
+    fb += einsum('iPiQ->PQ',eris.eri[1][:noa,:,:noa,:])
+    eoa = np.diag(fa[:noa,:noa])
+    eva = np.diag(fa[noa:,noa:])
+    eob = np.diag(fb[:nob,:nob])
+    evb = np.diag(fb[nob:,nob:])
     eia = lib.direct_sum('i-a->ia', eoa, eva)
     eIA = lib.direct_sum('I-A->IA', eob, evb)
     eabij = lib.direct_sum('ia+jb->abij', eia, eia)
@@ -438,9 +448,7 @@ def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
 class ERIs:
     def __init__(self, mf):
         self.hao = mf.get_hcore().astype(complex)
-        self.fao = mf.get_fock().astype(complex)
         self.eri_ao = mf.mol.intor('int2e_sph').astype(complex)
-        self.ao2mo(mf.mo_coeff)
 
     def ao2mo(self, mo_coeff):
         moa, mob = mo_coeff
@@ -449,10 +457,6 @@ class ERIs:
         ha = einsum('uv,up,vq->pq',self.hao,moa.conj(),moa)
         hb = einsum('uv,up,vq->pq',self.hao,mob.conj(),mob)
         self.h = ha, hb
-    
-        fa = einsum('uv,up,vq->pq',self.fao[0],moa.conj(),moa)
-        fb = einsum('uv,up,vq->pq',self.fao[1],mob.conj(),mob)
-        self.f = fa, fb
     
         eri_aa = einsum('uvxy,up,vr->prxy',self.eri_ao,moa.conj(),moa)
         eri_aa = einsum('prxy,xq,ys->prqs',eri_aa,     moa.conj(),moa)
