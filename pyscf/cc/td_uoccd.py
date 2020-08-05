@@ -386,11 +386,9 @@ def compute_energy(d1, d2, eris):
     e +=        einsum('pQrS,rSpQ',eri_ab,dab)
     return e.real
 
-def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
-    noa, nob = mf.mol.nelec
-    eris = ERIs(mf)
-    mo_coeff = mf.mo_coeff
-    eris.ao2mo(mf.mo_coeff)
+def init_amps(eris, mo_coeff, no):
+    noa, nob = no
+    eris.ao2mo(mo_coeff)
     fa, fb = eris.h[0].copy(), eris.h[1].copy()
     fa += einsum('piqi->pq',eris.eri[0][:,:noa,:,:noa])
     fa += einsum('pIqI->pq',eris.eri[1][:,:nob,:,:nob])
@@ -411,15 +409,18 @@ def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
     laa = taa.transpose(2,3,0,1).copy()
     lab = tab.transpose(2,3,0,1).copy()
     lbb = tbb.transpose(2,3,0,1).copy()
+    return (taa, tab, tbb), (laa, lab, lbb)
+
+def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
+    noa, nob = mf.mol.nelec
+    eris = ERIs(mf)
+    mo_coeff = mf.mo_coeff
+    (taa, tab, tbb), (laa, lab, lbb) = init_amps(eris, mo_coeff, mf.mol.nelec)
     d1, d2 = compute_rdms((taa, tab, tbb), (laa, lab, lbb))
     e = compute_energy(d1, d2, eris)
 
     converged = False
     for i in range(maxiter):
-        ka, kb = compute_kappa(d1, d2, eris, mf.mol.nelec)
-        Ua = scipy.linalg.expm(step*ka) # U = U_{old,new}
-        Ub = scipy.linalg.expm(step*kb) # U = U_{old,new}
-        mo_coeff = np.dot(mo_coeff[0], Ua), np.dot(mo_coeff[1], Ub)
         eris.ao2mo(mo_coeff)
         dt, dl = update_amps((taa, tab, tbb), (laa, lab, lbb), eris)
         taa -= step * dt[0]
@@ -431,6 +432,7 @@ def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
         d1, d2 = compute_rdms((taa, tab, tbb), (laa, lab, lbb))
         e_new = compute_energy(d1, d2, eris)
         de, e = e_new - e, e_new
+        ka, kb = compute_kappa(d1, d2, eris, mf.mol.nelec)
         dnormk  = np.linalg.norm(ka) + np.linalg.norm(kb)
         dnormt  = np.linalg.norm(dt[0])
         dnormt += np.linalg.norm(dt[1])
@@ -443,6 +445,9 @@ def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
         if dnormk < thresh:
             converged = True
             break
+        Ua = scipy.linalg.expm(step*ka) # U = U_{old,new}
+        Ub = scipy.linalg.expm(step*kb) # U = U_{old,new}
+        mo_coeff = np.dot(mo_coeff[0], Ua), np.dot(mo_coeff[1], Ub)
     return (taa, tab, tbb), (laa, lab, lbb), mo_coeff, e 
 
 class ERIs:

@@ -162,10 +162,7 @@ def compute_energy(d1, d2, eris):
     e -=       einsum('pqsr,rspq',eris.eri,d2)
     return e.real
 
-def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
-    no = mf.mol.nelec[0]
-    eris = ERIs(mf)
-    mo_coeff = mf.mo_coeff
+def init_amps(eris, mo_coeff, no):
     eris.ao2mo(mo_coeff)
     f  = eris.h.copy()
     f += 2.0 * einsum('piqi->pq',eris.eri[:,:no,:,:no])
@@ -176,14 +173,18 @@ def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
     eabij = lib.direct_sum('ia+jb->abij', eia, eia)
     t = eris.eri[no:,no:,:no,:no]/eabij
     l = t.transpose(2,3,0,1).copy()
+    return t, l
+ 
+def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
+    no = mf.mol.nelec[0]
+    eris = ERIs(mf)
+    mo_coeff = mf.mo_coeff
+    t, l = init_amps(eris, mo_coeff, no)
     d1, d2 = compute_rdms(t, l)
     e = compute_energy(d1, d2, eris)
 
     converged = False
     for i in range(maxiter):
-        kappa = compute_kappa(d1, d2, eris, no)
-        U = scipy.linalg.expm(step*kappa) # U = U_{old,new}
-        mo_coeff = np.dot(mo_coeff, U)
         eris.ao2mo(mo_coeff)
         dt, dl = update_amps(t, l, eris)
         t -= step * dt
@@ -191,6 +192,7 @@ def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
         d1, d2 = compute_rdms(t, l)
         e_new = compute_energy(d1, d2, eris)
         de, e = e_new - e, e_new
+        kappa = compute_kappa(d1, d2, eris, no)
         dnormk  = np.linalg.norm(kappa)
         dnormt  = np.linalg.norm(dt)
         dnorml  = np.linalg.norm(dl)
@@ -199,6 +201,8 @@ def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
         if dnormk < thresh:
             converged = True
             break
+        U = scipy.linalg.expm(step*kappa) # U = U_{old,new}
+        mo_coeff = np.dot(mo_coeff, U)
     return t, l, mo_coeff, e 
 
 class ERIs:
