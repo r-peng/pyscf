@@ -1,5 +1,5 @@
 import numpy as np
-import scipy
+import scipy, math
 from pyscf import lib, ao2mo
 einsum = lib.einsum
 
@@ -202,33 +202,36 @@ def compute_HA(A, d1, d2, eris):
     ave -= 0.5 * einsum('uqrs,rsuq',tmp,d2)
     return ave
 
-def kernel_rt(mf, t, l, mo_coeff, maxiter=50, step=0.03):
+def kernel_rt(mf, t, l, mo_coeff, maxiter=50, step=0.03, omega=1.0):
     eris = ERIs(mf)
-    eris.ao2mo(mo_coeff)
-    d1, d2 = compute_rdms(t, l)
     no = l.shape[0]
     nao = mf.mol.nao_nr()
     Aao = np.random.rand(nao,nao)
     Aao += Aao.T.conj()
+    hao_ = np.random.rand(nao,nao)
+    hao_ += hao_.T.conj() # random time-dependent part
+    d1, d2 = compute_rdms(t, l)
     A = ao2mo(Aao, mo_coeff)
     A_ave = einsum('pq,qp',A,d1)
     for i in range(maxiter):
-        kappa = 1j * compute_kappa(d1, d2, eris, no)
-        Ua = scipy.linalg.expm(step*kappa[ ::2, ::2]) # U = U_{old,new}
-        Ub = scipy.linalg.expm(step*kappa[1::2,1::2]) # U = U_{old,new}
-        mo_coeff = np.dot(mo_coeff[0], Ua), np.dot(mo_coeff[1], Ub)
         eris.ao2mo(mo_coeff)
+        eris.h += ao2mo(hao_, mo_coeff) * math.sin(i*step*omega)
         dt = update_t(t, eris)
         dl = update_l(t, l, eris)
         t -= 1j * step * dt
         l += 1j * step * dl
         d1, d2 = compute_rdms(t, l)
+        kappa = 1j * compute_kappa(d1, d2, eris, no)
         A = ao2mo(Aao, mo_coeff)
         A_ave_new = einsum('pq,qp',A,d1)
-        HA = compute_HA(A, d1, d2, eris)
         dA_ave, A_ave = A_ave_new - A_ave, A_ave_new
-        error = dA_ave - 1j * step * HA
-        print('iter: {}, error: {}'.format(i, abs(error)))
+        HA = compute_HA(A, d1, d2, eris)
+        error = dA_ave/step - 1j * HA
+        print('step: {}, phase: {:.4f}, error: {}'.format(
+              step, i*step*omega,abs(error)))
+        Ua = scipy.linalg.expm(step*kappa[ ::2, ::2]) # U = U_{old,new}
+        Ub = scipy.linalg.expm(step*kappa[1::2,1::2]) # U = U_{old,new}
+        mo_coeff = np.dot(mo_coeff[0], Ua), np.dot(mo_coeff[1], Ub)
 
 class ERIs:
     def __init__(self, mf):
