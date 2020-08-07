@@ -178,14 +178,14 @@ def init_amps(eris, mo_coeff, no):
 def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
     no = mf.mol.nelec[0]
     eris = ERIs(mf)
-    mo_coeff = mf.mo_coeff
-    t, l = init_amps(eris, mo_coeff, no)
+    U = np.eye(mf.mo_coeff.shape[0])
+    t, l = init_amps(eris, mf.mo_coeff, no)
     d1, d2 = compute_rdms(t, l)
     e = compute_energy(d1, d2, eris)
 
     converged = False
     for i in range(maxiter):
-        eris.ao2mo(mo_coeff)
+        eris.ao2mo(np.dot(mf.mo_coeff,U))
         dt, dl = update_amps(t, l, eris)
         t -= step * dt
         l -= step * dl
@@ -201,9 +201,8 @@ def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
         if dnormk < thresh:
             converged = True
             break
-        U = scipy.linalg.expm(step*kappa) # U = U_{old,new}
-        mo_coeff = np.dot(mo_coeff, U)
-    return t, l, mo_coeff, e 
+        U = np.dot(U,scipy.linalg.expm(step*kappa)) # U = U_{old,new}
+    return t, l, U, e 
 
 class ERIs:
     def __init__(self, mf):

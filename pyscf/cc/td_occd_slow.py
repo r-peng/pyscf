@@ -26,10 +26,10 @@ def sort2(tup, anti):
         out[1::2, ::2, ::2,1::2] = - ab.transpose(1,0,2,3).copy()
     return out
 
-def update_t(t, eris):
+def update_t(t, eris, X):
     no = t.shape[3]
     eri = eris.eri.copy()
-    f  = eris.h.copy()
+    f  = eris.h.copy() - 1j*X
     f += einsum('piqi->pq',eri[:,:no,:,:no])
 
     Foo  = f[:no,:no].copy()
@@ -56,10 +56,10 @@ def update_t(t, eris):
     dt += tmp.copy()
     return dt
 
-def update_l(t, l, eris):
+def update_l(t, l, eris, X):
     no = t.shape[3]
     eri = eris.eri.copy()
-    f  = eris.h.copy()
+    f  = eris.h.copy() - 1j*X
     f += einsum('piqi->pq',eri[:,:no,:,:no])
 
     Foo  = f[:no,:no].copy()
@@ -157,36 +157,63 @@ def compute_rdms(t, l, normal=False, symm=True):
         d2 = 0.5 * (d2 + d2.transpose(2,3,0,1).conj())
     return d1, d2
 
-def compute_kappa_intermediates(d1, d2, eris, no):
-    nv = d1.shape[0] - no
-
-#    Cov  = einsum('ba,aj->jb',d1[no:,no:],eris.h[no:,:no]) 
-#    Cov -= einsum('ij,bi->jb',d1[:no,:no],eris.h[no:,:no])
-#    Cov += 0.5 * einsum('pqjs,bspq->jb',eris.eri[:,:,:no,:],d2[no:,:,:,:])
-#    Cov -= 0.5 * einsum('bqrs,rsjq->jb',eris.eri[no:,:,:,:],d2[:,:,:no,:])
+def compute_kappa(d1, d2, eris, res_t, res_l, t, l):
+    nmo = d1.shape[0]
+    no = res_l.shape[0]
+    nv = nmo - no
+    A  = einsum('vp,qu->uvpq',np.eye(nmo),d1)
+    A -= einsum('qu,vp->uvpq',np.eye(nmo),d1)
+    Aovvo = A[:no,no:,no:,:no].copy()
+    Avoov = A[no:,:no,:no,no:].copy()
+#    print('A symm: {}'.format(np.linalg.norm(Aovvo+Avoov.transpose(1,0,3,2).conj())))
 
     C  = einsum('vp,pu->uv',d1,eris.h)
     C -= einsum('pu,vp->uv',d1,eris.h)
     C += 0.5 * einsum('pqus,vspq->uv',eris.eri,d2)
     C -= 0.5 * einsum('vqrs,rsuq->uv',eris.eri,d2)
-#    print(np.linalg.norm(Cov-C[:no,no:]))
-#    exit()
-
-    Aovvo  = einsum('ba,ij->jbai',np.eye(nv),d1[:no,:no])
-    Aovvo -= einsum('ij,ba->jbai',np.eye(no),d1[no:,no:])
-    return Aovvo, C
-
-def compute_kappa(d1, d2, eris, no):
-    Aovvo, C = compute_kappa_intermediates(d1, d2, eris, no)
     Cov = C[:no,no:].copy()
-    nv = d1.shape[0] - no
-    Aovvo = Aovvo.reshape(no*nv,no*nv)
+    Cvo = C[no:,:no].copy()
+#    print('C symm: {}'.format(np.linalg.norm(C+C.T.conj())))
+
+    B = np.zeros((nmo,nmo),dtype=complex)
+    B[:no,:no] += einsum('abuj,vjab->uv',res_t,l)
+    B[:no,:no] -= einsum('abvj,ujab->uv',res_t,l).conj()
+    B[no:,no:] -= einsum('vbij,ijub->uv',res_t,l)
+    B[no:,no:] += einsum('ubij,ijvb->uv',res_t,l).conj()
+
+    B[:no,:no] -= einsum('vjab,abuj->uv',res_l,t)
+    B[:no,:no] += einsum('ujab,abvj->uv',res_l,t).conj() 
+    B[no:,no:] += einsum('ijub,vbij->uv',res_l,t)
+    B[no:,no:] -= einsum('ijvb,ubij->uv',res_l,t).conj()
+#    print('B symm: {}'.format(np.linalg.norm(B+B.T.conj())))
+
+    Aovvo = Aovvo.reshape(no*nv,nv*no)
+    Avoov = Avoov.reshape(nv*no,no*nv)
     Cov = Cov.reshape(no*nv)
-    kappa = np.dot(np.linalg.inv(Aovvo),Cov)
-    kappa = kappa.reshape(nv,no)
-    kappa = np.block([[np.zeros((no,no)),-kappa.T.conj()],
-                      [kappa, np.zeros((nv,nv))]])
-    return kappa
+    Cvo = Cvo.reshape(nv*no)
+    
+    Xvo = 1j * np.dot(np.linalg.inv(Aovvo),Cov)
+    Xov = 1j * np.dot(np.linalg.inv(Avoov),Cvo)
+    Xvo = Xvo.reshape(nv,no)
+    Xov = Xov.reshape(no,nv)
+    
+    X = np.zeros((nmo,nmo),dtype=complex)
+    X[:no,no:] = Xov.copy()
+    X[no:,:no] = Xvo.copy()
+#    print('X: {}'.format(np.linalg.norm(X+X.T.conj())))
+    B += einsum('uvpq,pq->uv',A,-1j*X)
+#    print(np.linalg.norm(check[:no,no:]))
+#    print(np.linalg.norm(check[no:,:no]))
+
+    vv  = einsum('abcd,cd->ab',A[no:,no:,no:,no:],-1j*C[no:,no:])
+    vv += B[no:,no:].copy() 
+    oo  = einsum('ijkl,kl->ij',A[:no,:no,:no,:no],-1j*C[:no,:no])
+    oo += B[:no,:no].copy()
+    print('vv: {}'.format(np.linalg.norm(vv+vv.T.conj())))
+    print('oo: {}'.format(np.linalg.norm(oo+oo.T.conj())))
+    print('vv: {}'.format(np.linalg.norm(vv-C[no:,no:])))
+    print('oo: {}'.format(np.linalg.norm(oo-C[:no,:no])))
+    return X, 1j*B.T, 1j*C.T 
 
 def compute_energy(d1, d2, eris):
     e  = einsum('pq,qp',eris.h,d1)
@@ -199,56 +226,59 @@ def ao2mo(Aao, mo_coeff):
     Ab = einsum('uv,up,vq->pq',Aao,mob.conj(),mob)
     return sort1((Aa,Ab))
 
-def compute_HA(A, d1, d2, eris, no):
-    _, C = compute_kappa_intermediates(d1, d2, eris, no)
-    return einsum('uv,uv',C,A)
-
-def kernel_rt(mf, t, l, mo_coeff, maxiter=50, step=0.03, omega=1.0):
-    no = l.shape[0]
+def kernel_rt(mf, t, l, U, maxiter=50, step=0.03, omega=1.0):
+    no, _, nv, _ = l.shape
+    mo0 = mf.mo_coeff.copy()
+    U = np.array(U, dtype=complex)
+#    print(np.linalg.norm(np.linalg.inv(U)-U.T.conj()))
+#    exit()
+    mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
     eris = ERIs(mf)
-
     nao = mf.mol.nao_nr()
-    Aao = np.random.rand(nao,nao)
-    Aao += Aao.T.conj()
     hao_ = np.random.rand(nao,nao) # random time-dependent part
     hao_ += hao_.T.conj()
 
-    d1, d2 = compute_rdms(t, l)
-    A = ao2mo(Aao, mo_coeff)
-#
-#    Aov = A[:no,no:].copy()
-#    Avo = A[no:,:no].copy()
-#    A = np.zeros_like(A)
-#    A[:no,no:] = Aov.copy()
-#    A[no:,:no] = Avo.copy()
-#
-    A_ave = einsum('pq,qp',A,d1)
+    X = np.zeros((no+nv,)*2,dtype=complex)
+    d1_old, d2 = compute_rdms(t, l)
+    d0_old = einsum('qp,vq,up->vu',d1_old,U,U.conj()) # in stationary HF basis
+#    check  = einsum('vu,up,vq->qp',d0_old,U,U.conj())
+#    print(np.linalg.norm(check-d1_old))
+#    exit()
+    tr = abs(np.trace(d1_old)-no)
     for i in range(maxiter):
         eris.ao2mo(mo_coeff)
         eris.h += ao2mo(hao_, mo_coeff) * math.sin(i*step*omega)
-        dt = update_t(t, eris)
-        dl = update_l(t, l, eris)
+        dt = update_t(t, eris, X) # idt
+        dl = update_l(t, l, eris, X) # -idl
         t -= 1j * step * dt
         l += 1j * step * dl
         d1, d2 = compute_rdms(t, l)
-        A = ao2mo(Aao, mo_coeff)
-#
-#        Aov = A[:no,no:].copy()
-#        Avo = A[no:,:no].copy()
-#        A = np.zeros_like(A)
-#        A[:no,no:] = Aov.copy()
-#        A[no:,:no] = Avo.copy()
-#
-        A_ave_new = einsum('pq,qp',A,d1)
-        dA_ave, A_ave = A_ave_new - A_ave, A_ave_new
-        HA = compute_HA(A, d1, d2, eris, no)
-        error = dA_ave/step - 1j * HA
-        print('step: {}, phase: {:.4f}, error: {}, tr(d1): {}'.format(
-              i, i*step*omega, abs(error), abs(np.trace(d1)-no)))
-        kappa = 1j * compute_kappa(d1, d2, eris, no)
-        Ua = scipy.linalg.expm(step*kappa[ ::2, ::2]) # U = U_{old,new}
-        Ub = scipy.linalg.expm(step*kappa[1::2,1::2]) # U = U_{old,new}
-        mo_coeff = np.dot(mo_coeff[0], Ua), np.dot(mo_coeff[1], Ub)
+        d0 = einsum('qp,vq,up->vu',d1,U,U.conj()) # in stationary HF basis
+        dd1, d1_old = d1-d1_old, d1.copy()
+        dd0, d0_old = d0-d0_old, d0.copy()
+        X, B, C = compute_kappa(d1, d2, eris, dt, dl, t, l)
+        C0 = einsum('qp,vq,up->vu',C,U,U.conj()) # in stationary HF basis
+        B0 = einsum('qp,vq,up->vu',B,U,U.conj()) # in stationary HF basis
+        print(np.linalg.norm(B0 - dd0/step))
+        LHS = dd1/step
+        tmp  = einsum('rp,qr->qp',X,d1)
+        tmp -= einsum('qr,rp->qp',X,d1)
+        RHS = C + tmp
+        LHS_  = einsum('vu,up,vq->qp',dd0,U,U.conj())/step
+#        LHS_  = B.copy()
+        dU = np.dot(U, X)
+        tmp_  = einsum('vu,up,vq->qp',d0,dU,U.conj())
+        tmp_ += einsum('vu,up,vq->qp',d0,U,dU.conj())
+        LHS_ += tmp_.copy()
+        print(np.linalg.norm(LHS - LHS_))
+        U = np.dot(U, scipy.linalg.expm(step*X))
+        mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
+        tr += abs(np.trace(d1_old)-no)
+        print('step: {}, phase: {:.4f}, emo: {}, emo0: {}'.format(
+               i, i*step*omega, np.linalg.norm(LHS-RHS), 
+               np.linalg.norm(LHS_-RHS)))
+    print('check trace: {}'.format(tr))
+
 
 class ERIs:
     def __init__(self, mf):

@@ -414,7 +414,10 @@ def init_amps(eris, mo_coeff, no):
 def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
     noa, nob = mf.mol.nelec
     eris = ERIs(mf)
-    mo_coeff = mf.mo_coeff
+    mo0 = mf.mo_coeff.copy()
+    Ua = np.eye(mf.mo_coeff[0].shape[0])
+    Ub = np.eye(mf.mo_coeff[1].shape[0])
+    mo_coeff = np.dot(mo0,Ua), np.dot(mo0,Ub)
     (taa, tab, tbb), (laa, lab, lbb) = init_amps(eris, mo_coeff, mf.mol.nelec)
     d1, d2 = compute_rdms((taa, tab, tbb), (laa, lab, lbb))
     e = compute_energy(d1, d2, eris)
@@ -445,10 +448,10 @@ def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
         if dnormk < thresh:
             converged = True
             break
-        Ua = scipy.linalg.expm(step*ka) # U = U_{old,new}
-        Ub = scipy.linalg.expm(step*kb) # U = U_{old,new}
-        mo_coeff = np.dot(mo_coeff[0], Ua), np.dot(mo_coeff[1], Ub)
-    return (taa, tab, tbb), (laa, lab, lbb), mo_coeff, e 
+        Ua = np.dot(Ua, scipy.linalg.expm(step*ka)) # U = U_{old,new}
+        Ub = np.dot(Ub, scipy.linalg.expm(step*kb)) # U = U_{old,new}
+        mo_coeff = np.dot(mo0,Ua), np.dot(mo0,Ub)
+    return (taa, tab, tbb), (laa, lab, lbb), (Ua, Ub), e 
 
 class ERIs:
     def __init__(self, mf):
