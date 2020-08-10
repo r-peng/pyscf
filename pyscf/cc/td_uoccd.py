@@ -445,7 +445,7 @@ def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
         dnorml += np.linalg.norm(dl[2])
         print('iter: {}, dk: {}, dt: {}, dl: {}, de: {}, energy: {}'.format(
               i, dnormk, dnormt, dnorml, de, e))
-        if dnormk < thresh:
+        if dnormk+dnormt+dnorml < thresh:
             converged = True
             break
         Ua = np.dot(Ua, scipy.linalg.expm(step*ka)) # U = U_{old,new}
