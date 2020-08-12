@@ -3,7 +3,7 @@ import scipy
 from pyscf import lib, ao2mo
 einsum = lib.einsum
 
-def update_amps(t, l, eris):
+def update_amps(t, l, eris, it):
     taa, tab, tbb = t
     laa, lab, lbb = l
     eri_aa, eri_ab, eri_bb = eris.eri
@@ -188,6 +188,21 @@ def update_amps(t, l, eris):
     dlbb -= einsum('JK,IKAB->IJAB',FOO,eri_bb[:nob,:nob,nob:,nob:])
     dlbb -= einsum('CA,IJCB->IJAB',FVV,eri_bb[:nob,:nob,nob:,nob:])
     dlbb -= einsum('CB,IJAC->IJAB',FVV,eri_bb[:nob,:nob,nob:,nob:])
+
+    if it: 
+        dtaa *= - 1.0
+        dtab *= - 1.0
+        dtbb *= - 1.0
+        dlaa *= - 1.0
+        dlab *= - 1.0
+        dlbb *= - 1.0
+    else: 
+        dtaa *= - 1j
+        dtab *= - 1j
+        dtbb *= - 1j
+        dlaa *= 1j
+        dlab *= 1j
+        dlbb *= 1j
     return (dtaa, dtab, dtbb), (dlaa, dlab, dlbb)
 
 def compute_gamma(t, l): # normal ordered, asymmetric
@@ -344,7 +359,7 @@ def compute_rdms(t, l, normal=False, symm=True):
         dab = 0.5 * (dab + dab.transpose(2,3,0,1).conj())
     return (da, db), (daa, dab, dbb)
 
-def compute_kappa_intermediates(da, daa, dab, ha, eri_aa, eri_ab, noa):
+def compute_X_intermediates(da, daa, dab, ha, eri_aa, eri_ab, noa, it):
     nmoa = da.shape[0]
     nva = nmoa - noa
 
@@ -360,18 +375,24 @@ def compute_kappa_intermediates(da, daa, dab, ha, eri_aa, eri_ab, noa):
 
     Aovvo = Aovvo.reshape(noa*nva,noa*nva)
     Cov = Cov.reshape(noa*nva)
-    kappa = np.dot(np.linalg.inv(Aovvo),Cov)
-    kappa = kappa.reshape(nva,noa)
-    kappa = np.block([[np.zeros((noa,noa)),-kappa.T.conj()],
-                      [kappa, np.zeros((nva,nva))]])
-    return kappa
+    Xvo = np.dot(np.linalg.inv(Aovvo),Cov)
+    Xvo = Xvo.reshape(nva,noa)
+    Cov = Cov.reshape(noa,nva)
+    if it: 
+        X = np.block([[np.zeros((noa,noa)),-Xvo.T.conj()],
+                      [Xvo, np.zeros((nva,nva))]])
+    else:
+        X = 1j*np.block([[np.zeros((no,no)),Xvo.T.conj()],
+                          [Xvo, np.zeros((nv,nv))]])
+        Cov *= 1j
+    return X, Cov.T
 
-def compute_kappa(d1, d2, eris, no):
-    ka = compute_kappa_intermediates(d1[0], d2[0], d2[1], 
-         eris.h[0], eris.eri[0], eris.eri[1], no[0])
-    kb = compute_kappa_intermediates(d1[1], d2[2], d2[1].transpose(1,0,3,2), 
-         eris.h[1], eris.eri[2], eris.eri[1].transpose(1,0,3,2), no[1])
-    return ka, kb
+def compute_X(d1, d2, eris, no, it):
+    Xa, Cvoa = compute_X_intermediates(d1[0], d2[0], d2[1], 
+         eris.h[0], eris.eri[0], eris.eri[1], no[0], it)
+    Xb, Cvob = compute_X_intermediates(d1[1], d2[2], d2[1].transpose(1,0,3,2), 
+         eris.h[1], eris.eri[2], eris.eri[1].transpose(1,0,3,2), no[1], it)
+    return (Xa, Xb), (Cvoa, Cvob)
 
 def compute_energy(d1, d2, eris):
     ha, hb = eris.h
@@ -411,7 +432,28 @@ def init_amps(eris, mo_coeff, no):
     lbb = tbb.transpose(2,3,0,1).copy()
     return (taa, tab, tbb), (laa, lab, lbb)
 
-def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
+def update_RK4(t, l, eris, step, it):
+    dt1, dl1 = update_amps(t, l, eris, it) 
+    t1 = t[0] + dt1[0]*step*0.5, t[1] + dt1[1]*step*0.5, t[2] + dt1[2]*step*0.5 
+    l1 = l[0] + dl1[0]*step*0.5, l[1] + dl1[1]*step*0.5, l[2] + dl1[2]*step*0.5 
+    dt2, dl2 = update_amps(t1, l1, eris, it) 
+    t2 = t[0] + dt2[0]*step*0.5, t[1] + dt2[1]*step*0.5, t[2] + dt2[2]*step*0.5 
+    l2 = l[0] + dl2[0]*step*0.5, l[1] + dl2[1]*step*0.5, l[2] + dl2[2]*step*0.5 
+    dt3, dl3 = update_amps(t2, l2, eris, it) 
+    t3 = t[0] + dt3[0]*step, t[1] + dt3[1]*step, t[2] + dt3[2]*step 
+    l3 = l[0] + dl3[0]*step, l[1] + dl3[1]*step, l[2] + dl3[2]*step 
+    dt4, dl4 = update_amps(t3, l3, eris, it) 
+
+    dtaa = (dt1[0] + 2.0*dt2[0] + 2.0*dt3[0] + dt4[0])/6.0
+    dtab = (dt1[1] + 2.0*dt2[1] + 2.0*dt3[1] + dt4[1])/6.0
+    dtbb = (dt1[2] + 2.0*dt2[2] + 2.0*dt3[2] + dt4[2])/6.0
+    dlaa = (dl1[0] + 2.0*dl2[0] + 2.0*dl3[0] + dl4[0])/6.0
+    dlab = (dl1[1] + 2.0*dl2[1] + 2.0*dl3[1] + dl4[1])/6.0
+    dlbb = (dl1[2] + 2.0*dl2[2] + 2.0*dl3[2] + dl4[2])/6.0
+    return (dtaa, dtab, dtbb), (dlaa, dlab, dlbb)
+
+def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8, RK4=True):
+    it = True
     noa, nob = mf.mol.nelec
     eris = ERIs(mf)
     mo0 = mf.mo_coeff.copy()
@@ -425,31 +467,34 @@ def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
     converged = False
     for i in range(maxiter):
         eris.ao2mo(mo_coeff)
-        dt, dl = update_amps((taa, tab, tbb), (laa, lab, lbb), eris)
-        taa -= step * dt[0]
-        tab -= step * dt[1]
-        tbb -= step * dt[2]
-        laa -= step * dl[0]
-        lab -= step * dl[1]
-        lbb -= step * dl[2]
+        if RK4:
+            dt, dl = update_RK4((taa, tab, tbb), (laa, lab, lbb), eris, step, it=it)
+        else:
+            dt, dl = update_amps((taa, tab, tbb), (laa, lab, lbb), eris, it=it)
         d1, d2 = compute_rdms((taa, tab, tbb), (laa, lab, lbb))
+        X, _ = compute_X(d1, d2, eris, mf.mol.nelec, it)
+        taa += step * dt[0]
+        tab += step * dt[1]
+        tbb += step * dt[2]
+        laa += step * dl[0]
+        lab += step * dl[1]
+        lbb += step * dl[2]
         e_new = compute_energy(d1, d2, eris)
         de, e = e_new - e, e_new
-        ka, kb = compute_kappa(d1, d2, eris, mf.mol.nelec)
-        dnormk  = np.linalg.norm(ka) + np.linalg.norm(kb)
+        dnormX  = np.linalg.norm(X[0]) + np.linalg.norm(X[1])
         dnormt  = np.linalg.norm(dt[0])
         dnormt += np.linalg.norm(dt[1])
         dnormt += np.linalg.norm(dt[2])
         dnorml  = np.linalg.norm(dl[0])
         dnorml += np.linalg.norm(dl[1])
         dnorml += np.linalg.norm(dl[2])
-        print('iter: {}, dk: {}, dt: {}, dl: {}, de: {}, energy: {}'.format(
-              i, dnormk, dnormt, dnorml, de, e))
-        if dnormk+dnormt+dnorml < thresh:
+        print('iter: {}, dX: {}, dt: {}, dl: {}, de: {}, energy: {}'.format(
+              i, dnormX, dnormt, dnorml, de, e))
+        if dnormX+dnormt+dnorml < thresh:
             converged = True
             break
-        Ua = np.dot(Ua, scipy.linalg.expm(step*ka)) # U = U_{old,new}
-        Ub = np.dot(Ub, scipy.linalg.expm(step*kb)) # U = U_{old,new}
+        Ua = np.dot(Ua, scipy.linalg.expm(step*X[0])) # U = U_{old,new}
+        Ub = np.dot(Ub, scipy.linalg.expm(step*X[1])) # U = U_{old,new}
         mo_coeff = np.dot(mo0,Ua), np.dot(mo0,Ub)
     return (taa, tab, tbb), (laa, lab, lbb), (Ua, Ub), e 
 

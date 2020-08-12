@@ -26,12 +26,10 @@ def sort2(tup, anti):
         out[1::2, ::2, ::2,1::2] = - ab.transpose(1,0,2,3).copy()
     return out
 
-def update_t(t, eris, X=None):
+def update_t(t, eris, X):
     no = t.shape[3]
     eri = eris.eri.copy()
-    f  = eris.h.copy()
-    if X is not None: 
-        f -= 1j*X
+    f  = eris.h.copy() - 1j*X
     f += einsum('piqi->pq',eri[:,:no,:,:no])
 
     Foo  = f[:no,:no].copy()
@@ -58,12 +56,10 @@ def update_t(t, eris, X=None):
     dt += tmp.copy()
     return dt
 
-def update_l(t, l, eris, X=None):
+def update_l(t, l, eris, X):
     no = t.shape[3]
     eri = eris.eri.copy()
-    f  = eris.h.copy()
-    if X is not None: 
-        f -= 1j*X
+    f  = eris.h.copy() - 1j*X
     f += einsum('piqi->pq',eri[:,:no,:,:no])
 
     Foo  = f[:no,:no].copy()
@@ -99,6 +95,65 @@ def update_l(t, l, eris, X=None):
     tmp -= tmp.transpose(0,1,3,2)
     dl += tmp.copy()
     return dl
+
+def update_amps(t, l, eris, X, update_X=False):
+    no = t.shape[3]
+    eri = eris.eri.copy()
+    f  = eris.h.copy() - 1j*X
+    f += einsum('piqi->pq',eri[:,:no,:,:no])
+
+    Foo  = f[:no,:no].copy()
+    Foo += 0.5 * einsum('ilcd,cdkl->ik',eri[:no,:no,no:,no:],t)
+    Fvv  = f[no:,no:].copy()
+    Fvv -= 0.5 * einsum('klad,cdkl->ca',eri[:no,:no,no:,no:],t)
+
+    dt  = eri[no:,no:,:no,:no].copy()
+    dt += einsum('bc,acij->abij',Fvv,t)
+    dt += einsum('ac,cbij->abij',Fvv,t)
+    dt -= einsum('kj,abik->abij',Foo,t)
+    dt -= einsum('ki,abkj->abij',Foo,t)
+    
+    dl  = eri[:no,:no,no:,no:].copy() 
+    dl += einsum('ca,ijcb->ijab',Fvv,l)
+    dl += einsum('cb,ijac->ijab',Fvv,l)
+    dl -= einsum('ik,kjab->ijab',Foo,l)
+    dl -= einsum('jk,ikab->ijab',Foo,l)
+
+    tmp  = 0.5 * einsum('ilcd,cdkl->ik',l,t)
+    dl -= einsum('ik,kjab->ijab',tmp,eri[:no,:no,no:,no:])
+    dl -= einsum('jk,ikab->ijab',tmp,eri[:no,:no,no:,no:])
+    tmp  = 0.5 * einsum('klad,cdkl->ca',l,t)
+    dl -= einsum('ca,ijcb->ijab',tmp,eri[:no,:no,no:,no:])
+    dl -= einsum('cb,ijac->ijab',tmp,eri[:no,:no,no:,no:])
+
+    vvvv  = eri[no:,no:,no:,no:].copy()
+    vvvv += 0.5 * einsum('klab,cdkl->cdab',eri[:no,:no,no:,no:],t)
+    oooo  = eri[:no,:no,:no,:no].copy()
+    oooo += 0.5 * einsum('ijcd,cdkl->ijkl',eri[:no,:no,no:,no:],t)
+
+    dt += 0.5 * einsum('klij,abkl->abij',oooo,t)
+    dt += 0.5 * einsum('abcd,cdij->abij',eri[no:,no:,no:,no:],t)
+
+    dl += 0.5 * einsum('cdab,ijcd->ijab',vvvv,l)
+    dl += 0.5 * einsum('ijkl,klab->ijab',oooo,l)
+
+    ovvo = einsum('jlbd,cdkl->jcbk',eri[:no,:no,no:,no:],t)
+
+    tmp  = einsum('kbcj,acik->abij',eri[:no,no:,no:,:no] + 0.5 * ovvo,t)
+    tmp += tmp.transpose(1,0,3,2)
+    tmp -= tmp.transpose(0,1,3,2)
+    dt += tmp.copy()
+
+    tmp  = einsum('jcbk,ikac->ijab',eri[:no,no:,no:,:no] + ovvo,l)
+    tmp += tmp.transpose(1,0,3,2)
+    tmp -= tmp.transpose(0,1,3,2)
+    dl += tmp.copy()
+
+    d1 = d2 = C = None
+    if update_X:
+        d1, d2 = compute_rdms(t, l)
+        X, C = compute_X(d1, d2, eris, no) # C_qp = i<[H,p+q]>
+    return -1j*dt, 1j*dl, X, C, d1, d2
 
 def compute_gamma1(t, l): # normal ordered, asymmetric
     dvv = 0.5 * einsum('ikac,bcik->ba',l,t)
@@ -252,7 +307,7 @@ def compute_rdms(t, l, normal=False, symm=True):
 #    exit()
 #    return X, 1j*B.T, 1j*C.T 
 
-def compute_kappa(d1, d2, eris, no):
+def compute_X(d1, d2, eris, no):
     nmo = d1.shape[0]
     nv = nmo - no
     A  = einsum('vp,qu->uvpq',np.eye(nmo),d1)
@@ -286,6 +341,92 @@ def ao2mo(Aao, mo_coeff):
     Aa = einsum('uv,up,vq->pq',Aao,moa.conj(),moa)
     Ab = einsum('uv,up,vq->pq',Aao,mob.conj(),mob)
     return sort1((Aa,Ab))
+
+def update_RK4(t, l, X, eris, step, update_X):
+    dt1, dl1, X1, C, d1, d2 = update_amps(t, l, eris, X, update_X) 
+    if update_X:
+        dt2, dl2, X2, _, _, _ = update_amps(t + dt1*step*0.5, l + dl1*step*0.5, eris, X + X1*step*0.5, update_X) 
+        dt3, dl3, X3, _, _, _ = update_amps(t + dt2*step*0.5, l + dl2*step*0.5, eris, X + X2*step*0.5, update_X) 
+        dt4, dl4, X4, _, _, _ = update_amps(t + dt3*step, l + dl3*step, eris, X + X3*step, update_X) 
+        X = (X1 + 2.0*X2 + 2.0*X3 + X4)/6.0
+    else:
+        dt2, dl2, _, _, _, _ = update_amps(t + dt1*step*0.5, l + dl1*step*0.5, eris, X, update_X) 
+        dt3, dl3, _, _, _, _ = update_amps(t + dt2*step*0.5, l + dl2*step*0.5, eris, X, update_X) 
+        dt4, dl4, _, _, _, _ = update_amps(t + dt3*step, l + dl3*step, eris, X, update_X) 
+
+    dt = (dt1 + 2.0*dt2 + 2.0*dt3 + dt4)/6.0
+    dl = (dl1 + 2.0*dl2 + 2.0*dl3 + dl4)/6.0
+    return dt, dl, X, C, d1, d2
+
+def kernel_rt_test_RK4(mf, t, l, U, w, f0, tp, tf, step, RK4_X=False):
+    nao = mf.mol.nao_nr()
+    mu_ao = mf.mol.intor('int1e_r')
+    hao  = mu_ao[0,:,:] * f0[0]
+    hao += mu_ao[1,:,:] * f0[1]
+    hao += mu_ao[2,:,:] * f0[2]
+
+    td = 2 * int(tp/step)
+    maxiter = int(tf/step)
+    no, _, nv, _ = l.shape
+    mo0 = mf.mo_coeff.copy()
+    U = np.array(U, dtype=complex)
+    X = np.zeros((no+nv,)*2,dtype=complex)
+    mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
+    eris = ERIs(mf)
+
+    Aao = np.random.rand(nao,nao)
+#    Aao += Aao.T
+    Amo0 = ao2mo(Aao, (mo0,mo0)) # in stationary HF basis
+    d1_old, d2 = compute_rdms(t, l)
+    d0_old = einsum('qp,vq,up->vu',d1_old,U,U.conj()) # in stationary HF basis
+    Amo = ao2mo(Aao, mo_coeff)
+    A_old = einsum('pq,qp',Amo,d1_old)
+    A0_old = einsum('pq,qp',Amo0,d0_old)
+    tr = abs(np.trace(d1_old)-no)
+    for i in range(maxiter):
+        eris.ao2mo(mo_coeff)
+        if i <= td:
+            evlp = math.sin(math.pi*i/td)**2
+            osc = math.cos(w*(i*step-tp)) 
+            eris.h += ao2mo(hao, mo_coeff) * osc * evlp
+        Amo = ao2mo(Aao, mo_coeff)
+        if RK4_X: 
+            dt, dl, X, C, d1, d2 = update_RK4(t, l, X, eris, step, update_X=True)
+        else: 
+            dt, dl, _, _, _, _ = update_RK4(t, l, X, eris, step, update_X=False)
+            d1, d2 = compute_rdms(t, l)
+            X, C = compute_X(d1, d2, eris, no) # C_qp = i<[H,p+q]>
+        t += step * dt
+        l += step * dl
+        d0 = einsum('qp,vq,up->vu',d1,U,U.conj()) # in stationary HF basis
+        A = einsum('pq,qp',Amo,d1)
+        A0 = einsum('pq,qp',Amo0,d0)
+        dd1, d1_old = d1-d1_old, d1.copy()
+        dd0, d0_old = d0-d0_old, d0.copy()
+        dA, A_old = A-A_old, A
+        dA0, A0_old = A0-A0_old, A0
+        LHS = dd1/step
+        LHS0 = dd0/step
+        C0 = einsum('qp,vq,up->vu',C,U,U.conj()) # in stationary HF basis
+        HA = einsum('pq,qp',Amo,C)
+        HA0 = einsum('pq,qp',Amo0,C0)
+        tmp  = einsum('rp,qr->qp',X,d1)
+        tmp -= einsum('qr,rp->qp',X,d1)
+        RHS = C + tmp
+        U = np.dot(U, scipy.linalg.expm(step*X))
+        mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
+        print('time: {:.4f}, d1: {}, d0: {}, A: {}, A0: {}, A.imag: {}, normX: {}'.format(
+               i*step, np.linalg.norm(LHS-RHS), np.linalg.norm(LHS0-C0), 
+               abs(dA/step-HA), abs(dA0/step-HA0), A_old.imag, np.linalg.norm(X)))
+#        print('time: {:.4f}, d1: {}, d0: {}, A: {}, A0: {}, A.imag: {}'.format(
+#               i*step, np.linalg.norm(LHS-RHS), np.linalg.norm(LHS0-C0), 
+#               abs(dA/step-HA), abs(dA0/step-HA0), A_old.imag))
+        if np.linalg.norm(LHS-RHS) > 1.0:
+            print('diverging error!')
+            break
+        tr += abs(np.trace(d1_old)-no)
+    print('check trace: {}'.format(tr))
+
 
 def kernel_rt_test(mf, t, l, U, w, f0, tp, tf, step):
     nao = mf.mol.nao_nr()
@@ -333,7 +474,7 @@ def kernel_rt_test(mf, t, l, U, w, f0, tp, tf, step):
         dA0, A0_old = A0-A0_old, A0
         LHS = dd1/step
         LHS0 = dd0/step
-        X, C = compute_kappa(d1, d2, eris, no) # C_qp = i<[H,p+q]>
+        X, C = compute_X(d1, d2, eris, no) # C_qp = i<[H,p+q]>
         C0 = einsum('qp,vq,up->vu',C,U,U.conj()) # in stationary HF basis
         HA = einsum('pq,qp',Amo,C)
         HA0 = einsum('pq,qp',Amo0,C0)
@@ -352,13 +493,87 @@ def kernel_rt_test(mf, t, l, U, w, f0, tp, tf, step):
 #        print(abs(einsum('pq,pq',Amo,diff)))
 #        print(np.linalg.norm(np.dot(Amo,diff)))
 #        print(abs(np.trace(np.dot(Amo,diff))))
+
         U = np.dot(U, scipy.linalg.expm(step*X))
         mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
-        tr += abs(np.trace(d1_old)-no)
-        print('time: {:.4f}, d1: {}, d0: {}, A: {}, A0: {}, A.imag: {}'.format(
+        print('time: {:.4f}, d1: {}, d0: {}, A: {}, A0: {}, A.imag: {}, normX: {}'.format(
                i*step, np.linalg.norm(LHS-RHS), np.linalg.norm(LHS0-C0), 
-               abs(dA/step-HA), abs(dA0/step-HA0), A_old.imag))
+               abs(dA/step-HA), abs(dA0/step-HA0), A_old.imag, np.linalg.norm(X)))
+#        print('time: {:.4f}, d1: {}, d0: {}, A: {}, A0: {}, A.imag: {}'.format(
+#               i*step, np.linalg.norm(LHS-RHS), np.linalg.norm(LHS0-C0), 
+#               abs(dA/step-HA), abs(dA0/step-HA0), A_old.imag))
+        if np.linalg.norm(LHS-RHS) > 1.0:
+            print('diverging error!')
+            break
+        tr += abs(np.trace(d1_old)-no)
     print('check trace: {}'.format(tr))
+
+def kernel_rt_RK4(mf, t, l, U, w, f0, tp, tf, step, RK4_X=False):
+    nao = mf.mol.nao_nr()
+    mu_ao = mf.mol.intor('int1e_r')
+    hao  = mu_ao[0,:,:] * f0[0]
+    hao += mu_ao[1,:,:] * f0[1]
+    hao += mu_ao[2,:,:] * f0[2]
+
+    td = 2 * int(tp/step)
+    maxiter = int(tf/step)
+    no, _, nv, _ = l.shape
+    mo0 = mf.mo_coeff.copy()
+    U = np.array(U, dtype=complex)
+    X = np.zeros((no+nv,)*2,dtype=complex)
+    mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
+    eris = ERIs(mf)
+    mux = np.zeros(maxiter+1,dtype=complex)  
+    muy = np.zeros(maxiter+1,dtype=complex)  
+    muz = np.zeros(maxiter+1,dtype=complex)  
+    Hmux = np.zeros(maxiter,dtype=complex)  
+    Hmuy = np.zeros(maxiter,dtype=complex)  
+    Hmuz = np.zeros(maxiter,dtype=complex)  
+    E = np.zeros(maxiter,dtype=complex)
+
+    d1, d2 = compute_rdms(t, l)
+    mux_mo = ao2mo(mu_ao[0,:,:], mo_coeff)
+    muy_mo = ao2mo(mu_ao[1,:,:], mo_coeff)
+    muz_mo = ao2mo(mu_ao[2,:,:], mo_coeff)
+    mux[0] = einsum('pq,qp',mux_mo,d1)
+    muy[0] = einsum('pq,qp',muy_mo,d1)
+    muz[0] = einsum('pq,qp',muz_mo,d1)
+
+    for i in range(maxiter):
+        eris.ao2mo(mo_coeff)
+        if i <= td:
+            evlp = math.sin(math.pi*i/td)**2
+            osc = math.cos(w*(i*step-tp)) 
+            eris.h += ao2mo(hao, mo_coeff) * evlp * osc
+        mux_mo = ao2mo(mu_ao[0,:,:], mo_coeff)
+        muy_mo = ao2mo(mu_ao[1,:,:], mo_coeff)
+        muz_mo = ao2mo(mu_ao[2,:,:], mo_coeff)
+        if RK4_X: 
+            dt, dl, X, C, d1, d2 = update_RK4(t, l, X, eris, step, update_X=True)
+        else: 
+            dt, dl, _, _, _, _ = update_RK4(t, l, X, eris, step, update_X=False)
+            d1, d2 = compute_rdms(t, l)
+            X, C = compute_X(d1, d2, eris, no) # C_qp = i<[H,p+q]>
+        t += step * dt
+        l += step * dl
+        mux[i+1] = einsum('pq,qp',mux_mo,d1)
+        muy[i+1] = einsum('pq,qp',muy_mo,d1)
+        muz[i+1] = einsum('pq,qp',muz_mo,d1)
+        e  = einsum('pq,qp',eris.h,d1) 
+        e += 0.25 * einsum('pqrs,rspq',eris.eri,d2)
+        E[i] = e
+        Hmux[i] = einsum('pq,qp',mux_mo,C)
+        Hmuy[i] = einsum('pq,qp',muy_mo,C)
+        Hmuz[i] = einsum('pq,qp',muz_mo,C)
+        U = np.dot(U, scipy.linalg.expm(step*X))
+        mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
+        error  = (mux[i+1]-mux[i])/step - Hmux[i] 
+        error += (muy[i+1]-muy[i])/step - Hmuy[i] 
+        error += (muz[i+1]-muz[i])/step - Hmuz[i]
+        imag  = mux[i+1].imag + muy[i+1].imag + muz[i+1].imag 
+        print('time: {:.4f}, ehrenfest: {}, imag: {}, E.imag: {},'.format(i*step, abs(error), imag, E[i].imag))
+#        print('mux: {}, muy: {}, muz: {}'.format(mux[i+1].real,muy[i+1].real,muz[i+1].real))
+    return mux, muy, muz, E
 
 def kernel_rt(mf, t, l, U, w, f0, tp, tf, step):
     nao = mf.mol.nao_nr()
@@ -411,7 +626,7 @@ def kernel_rt(mf, t, l, U, w, f0, tp, tf, step):
         e  = einsum('pq,qp',eris.h,d1) 
         e += 0.25 * einsum('pqrs,rspq',eris.eri,d2)
         E[i] = e
-        X, C = compute_kappa(d1, d2, eris, no)
+        X, C = compute_X(d1, d2, eris, no)
         Hmux[i] = einsum('pq,qp',mux_mo,C)
         Hmuy[i] = einsum('pq,qp',muy_mo,C)
         Hmuz[i] = einsum('pq,qp',muz_mo,C)

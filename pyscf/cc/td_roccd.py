@@ -1,9 +1,9 @@
 import numpy as np
-import scipy
+import scipy, math
 from pyscf import lib, ao2mo
 einsum = lib.einsum
 
-def update_amps(t, l, eris):
+def update_amps(t, l, eris, it):
     no = l.shape[0]
     eri = eris.eri.copy()
     t_ = t - t.transpose(0,1,3,2)
@@ -73,7 +73,11 @@ def update_amps(t, l, eris):
     dl -= einsum('jk,ikab->ijab',Foo,eri[:no,:no,no:,no:])
     dl -= einsum('ca,ijcb->ijab',Fvv,eri[:no,:no,no:,no:])
     dl -= einsum('cb,ijac->ijab',Fvv,eri[:no,:no,no:,no:])
-    return dt, dl
+
+    if it:
+        return -dt, -dl
+    else:
+        return -1j*dt, 1j*dl
 
 def compute_gamma(t, l): # normal ordered, asymmetric
     t_ = t - t.transpose(0,1,3,2)
@@ -134,7 +138,7 @@ def compute_rdms(t, l, normal=False, symm=True):
         d2 = 0.5 * (d2 + d2.transpose(2,3,0,1).conj())
     return d1, d2 
 
-def compute_kappa(d1, d2, eris, no):
+def compute_X(d1, d2, eris, no, it):
     nmo = d1.shape[0]
     nv = nmo - no
 
@@ -150,11 +154,17 @@ def compute_kappa(d1, d2, eris, no):
 
     Aovvo = Aovvo.reshape(no*nv,no*nv)
     Cov = Cov.reshape(no*nv)
-    kappa = np.dot(np.linalg.inv(Aovvo),Cov)
-    kappa = kappa.reshape(nv,no)
-    kappa = np.block([[np.zeros((no,no)),-kappa.T.conj()],
-                      [kappa, np.zeros((nv,nv))]])
-    return kappa
+    Xvo = np.dot(np.linalg.inv(Aovvo),Cov)
+    Xvo = Xvo.reshape(nv,no)
+    Cov = Cov.reshape(no,nv)
+    if it: 
+        X = np.block([[np.zeros((no,no)),-Xvo.T.conj()],
+                          [Xvo, np.zeros((nv,nv))]])
+    else:
+        X = 1j*np.block([[np.zeros((no,no)),Xvo.T.conj()],
+                          [Xvo, np.zeros((nv,nv))]])
+        Cov *= 1j
+    return X, Cov.T
 
 def compute_energy(d1, d2, eris):
     e  = 2.0 * einsum('pq,qp',eris.h,d1)
@@ -174,8 +184,19 @@ def init_amps(eris, mo_coeff, no):
     t = eris.eri[no:,no:,:no,:no]/eabij
     l = t.transpose(2,3,0,1).copy()
     return t, l
+
+def update_RK4(t, l, eris, step, it):
+    dt1, dl1 = update_amps(t, l, eris, it) 
+    dt2, dl2 = update_amps(t + dt1*step*0.5, l + dl1*step*0.5, eris, it) 
+    dt3, dl3 = update_amps(t + dt2*step*0.5, l + dl2*step*0.5, eris, it) 
+    dt4, dl4 = update_amps(t + dt3*step, l + dl3*step, eris, it) 
+
+    dt = (dt1 + 2.0*dt2 + 2.0*dt3 + dt4)/6.0
+    dl = (dl1 + 2.0*dl2 + 2.0*dl3 + dl4)/6.0
+    return dt, dl
  
-def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
+def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8, RK4=True):
+    it = True
     no = mf.mol.nelec[0]
     eris = ERIs(mf)
     U = np.eye(mf.mo_coeff.shape[0])
@@ -186,23 +207,170 @@ def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8):
     converged = False
     for i in range(maxiter):
         eris.ao2mo(np.dot(mf.mo_coeff,U))
-        dt, dl = update_amps(t, l, eris)
-        t -= step * dt
-        l -= step * dl
+        if RK4:
+            dt, dl = update_RK4(t, l, eris, step, it=it)
+        else:
+            dt, dl = update_amps(t, l, eris, it=it)
         d1, d2 = compute_rdms(t, l)
+        X, _ = compute_X(d1, d2, eris, no, it=it)
+        t += step * dt
+        l += step * dl
         e_new = compute_energy(d1, d2, eris)
         de, e = e_new - e, e_new
-        kappa = compute_kappa(d1, d2, eris, no)
-        dnormk  = np.linalg.norm(kappa)
+        dnormX  = np.linalg.norm(X)
         dnormt  = np.linalg.norm(dt)
         dnorml  = np.linalg.norm(dl)
-        print('iter: {}, dk: {}, dt: {}, dl: {}, de: {}, energy: {}'.format(
-              i, dnormk, dnormt, dnorml, de, e))
-        if dnormk+dnormt+dnorml < thresh:
+        print('iter: {}, X: {}, dt: {}, dl: {}, de: {}, energy: {}'.format(
+              i, dnormX, dnormt, dnorml, de, e))
+        if dnormX+dnormt+dnorml < thresh:
             converged = True
             break
-        U = np.dot(U,scipy.linalg.expm(step*kappa)) # U = U_{old,new}
+        U = np.dot(U,scipy.linalg.expm(step*X)) # U = U_{old,new}
     return t, l, U, e 
+
+def kernel_rt(mf, t, l, U, w, f0, tp, tf, step, RK4=True, dipole=False):
+    it = False
+    nao = mf.mol.nao_nr()
+    mu_ao = mf.mol.intor('int1e_r')
+    hao  = mu_ao[0,:,:] * f0[0]
+    hao += mu_ao[1,:,:] * f0[1]
+    hao += mu_ao[2,:,:] * f0[2]
+
+    td = 2 * int(tp/step)
+    maxiter = int(tf/step)
+    no = mf.mol.nelec[0]
+    eris = ERIs(mf)
+    mo_coeff = np.dot(mf.mo_coeff, U)
+    U = np.array(U, dtype=complex)
+
+    d1, d2 = compute_rdms(t, l)
+    mux = muy = muz = None
+    E = np.zeros(maxiter,dtype=complex)  
+    if dipole: 
+        mux = np.zeros(maxiter+1,dtype=complex)  
+        muy = np.zeros(maxiter+1,dtype=complex)  
+        muz = np.zeros(maxiter+1,dtype=complex)  
+        Hmux = np.zeros(maxiter,dtype=complex)  
+        Hmuy = np.zeros(maxiter,dtype=complex)  
+        Hmuz = np.zeros(maxiter,dtype=complex)  
+    
+        mux_mo = ao2mo(mu_ao[0,:,:], mo_coeff)
+        muy_mo = ao2mo(mu_ao[1,:,:], mo_coeff)
+        muz_mo = ao2mo(mu_ao[2,:,:], mo_coeff)
+        mux[0] = einsum('pq,qp',mux_mo,d1)
+        muy[0] = einsum('pq,qp',muy_mo,d1)
+        muz[0] = einsum('pq,qp',muz_mo,d1)
+
+    for i in range(maxiter):
+        eris.ao2mo(mo_coeff)
+        if i <= td:
+            evlp = math.sin(math.pi*i/td)**2
+            osc = math.cos(w*(i*step-tp)) 
+            eris.h += ao2mo(hao,mo_coeff) * evlp * osc
+        if RK4:
+            dt, dl = update_RK4(t, l, eris, step, it=it)
+        else:
+            dt, dl = update_amps(t, l, eris, it=it)
+        d1, d2 = compute_rdms(t, l)
+        X, Cvo = compute_X(d1, d2, eris, no, it=it)
+        t += step * dt
+        l += step * dl
+        E[i] = compute_energy(d1, d2, eris)
+        if dipole: 
+            mux_mo = ao2mo(mu_ao[0,:,:], mo_coeff)
+            muy_mo = ao2mo(mu_ao[1,:,:], mo_coeff)
+            muz_mo = ao2mo(mu_ao[2,:,:], mo_coeff)
+            mux[i+1] = 2.0 * einsum('pq,qp',mux_mo,d1)
+            muy[i+1] = 2.0 * einsum('pq,qp',muy_mo,d1)
+            muz[i+1] = 2.0 * einsum('pq,qp',muz_mo,d1)
+            C = np.zeros((nao,nao),dtype=complex)
+            C[:no,no:] = Cvo.T.conj()
+            C[no:,:no] = Cvo.copy()
+            Hmux[i] = 2.0 * einsum('pq,qp',mux_mo,C)
+            Hmuy[i] = 2.0 * einsum('pq,qp',muy_mo,C)
+            Hmuz[i] = 2.0 * einsum('pq,qp',muz_mo,C)
+            error  = (mux[i+1]-mux[i])/step - Hmux[i] 
+            error += (muy[i+1]-muy[i])/step - Hmuy[i] 
+            error += (muz[i+1]-muz[i])/step - Hmuz[i]
+            imag  = mux[i+1].imag + muy[i+1].imag + muz[i+1].imag 
+            print('time: {:.4f}, ehrenfest: {}, imag: {}, E.imag: {},'.format(
+                  i*step, abs(error), imag, E[i].imag))
+        U = np.dot(U,scipy.linalg.expm(step*X)) # U = U_{old,new}
+        mo_coeff = np.dot(mf.mo_coeff, U)
+    return mux, muy, muz, E
+
+def kernel_rt_test(mf, t, l, U, w, f0, tp, tf, step, RK4=True):
+    it = False
+    nao = mf.mol.nao_nr()
+    mu_ao = mf.mol.intor('int1e_r')
+    hao  = mu_ao[0,:,:] * f0[0]
+    hao += mu_ao[1,:,:] * f0[1]
+    hao += mu_ao[2,:,:] * f0[2]
+
+    td = 2 * int(tp/step)
+    maxiter = int(tf/step)
+    no = mf.mol.nelec[0]
+    eris = ERIs(mf)
+    mo_coeff = np.dot(mf.mo_coeff, U)
+    U = np.array(U, dtype=complex)
+
+    d1, d2 = compute_rdms(t, l)
+    mux = muy = muz = None
+    E = np.zeros(maxiter,dtype=complex)  
+
+    Aao = np.random.rand(nao,nao)
+    Amo0 = ao2mo(Aao, mf.mo_coeff) # in stationary HF basis
+    d1_old, d2 = compute_rdms(t, l)
+    d0_old = einsum('qp,vq,up->vu',d1_old,U,U.conj()) # in stationary HF basis
+    Amo = ao2mo(Aao, mo_coeff)
+    A_old = 2.0 * einsum('pq,qp',Amo,d1_old)
+    A0_old = 2.0 * einsum('pq,qp',Amo0,d0_old)
+    tr = abs(np.trace(d1_old)-no)
+
+    for i in range(maxiter):
+        eris.ao2mo(mo_coeff)
+        if i <= td:
+            evlp = math.sin(math.pi*i/td)**2
+            osc = math.cos(w*(i*step-tp)) 
+            eris.h += ao2mo(hao,mo_coeff) * evlp * osc
+        if RK4:
+            dt, dl = update_RK4(t, l, eris, step, it=it)
+        else:
+            dt, dl = update_amps(t, l, eris, it=it)
+        d1, d2 = compute_rdms(t, l)
+        X, Cvo = compute_X(d1, d2, eris, no, it=it)
+        C = np.zeros((nao,nao),dtype=complex)
+        C[:no,no:] = Cvo.T.conj()
+        C[no:,:no] = Cvo.copy()
+        t += step * dt
+        l += step * dl
+        E[i] = compute_energy(d1, d2, eris)
+        Amo = ao2mo(Aao, mo_coeff)
+        d0 = einsum('qp,vq,up->vu',d1,U,U.conj()) # in stationary HF basis
+        A = 2.0 * einsum('pq,qp',Amo,d1)
+        A0 = 2.0 * einsum('pq,qp',Amo0,d0)
+        dd1, d1_old = d1-d1_old, d1.copy()
+        dd0, d0_old = d0-d0_old, d0.copy()
+        dA, A_old = A-A_old, A
+        dA0, A0_old = A0-A0_old, A0
+        LHS = dd1/step
+        LHS0 = dd0/step
+        C0 = einsum('qp,vq,up->vu',C,U,U.conj()) # in stationary HF basis
+        HA = 2.0 * einsum('pq,qp',Amo,C)
+        HA0 = 2.0 * einsum('pq,qp',Amo0,C0)
+        tmp  = einsum('rp,qr->qp',X,d1)
+        tmp -= einsum('qr,rp->qp',X,d1)
+        RHS = C + tmp
+        tr += abs(np.trace(d1_old)-no)
+        U = np.dot(U,scipy.linalg.expm(step*X)) # U = U_{old,new}
+        mo_coeff = np.dot(mf.mo_coeff, U)
+        print('time: {:.4f}, d1: {}, d0: {}, A: {}, A0: {}, A.imag: {}'.format(
+               i*step, np.linalg.norm(LHS-RHS), np.linalg.norm(LHS0-C0), 
+               abs(dA/step-HA), abs(dA0/step-HA0), A_old.imag))
+    print('check trace: {}'.format(tr))
+
+def ao2mo(Aao, mo_coeff):
+    return einsum('uv,up,vq->pq',Aao,mo_coeff.conj(),mo_coeff)
 
 class ERIs:
     def __init__(self, mf):
