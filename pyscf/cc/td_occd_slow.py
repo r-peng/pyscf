@@ -358,7 +358,7 @@ def update_RK4(t, l, X, eris, step, update_X):
     dl = (dl1 + 2.0*dl2 + 2.0*dl3 + dl4)/6.0
     return dt, dl, X, C, d1, d2
 
-def kernel_rt_test_RK4(mf, t, l, U, w, f0, tp, tf, step, RK4_X=False):
+def kernel_rt_test_RK4(mf, t, l, U, w, f0, tp, tf, step, RK4_X=False, orb=True):
     nao = mf.mol.nao_nr()
     mu_ao = mf.mol.intor('int1e_r')
     hao  = mu_ao[0,:,:] * f0[0]
@@ -387,7 +387,8 @@ def kernel_rt_test_RK4(mf, t, l, U, w, f0, tp, tf, step, RK4_X=False):
         eris.ao2mo(mo_coeff)
         if i <= td:
             evlp = math.sin(math.pi*i/td)**2
-            osc = math.cos(w*(i*step-tp)) 
+#            osc = math.cos(w*(i*step-tp)) 
+            osc = math.sin(w*i*step) 
             eris.h += ao2mo(hao, mo_coeff) * osc * evlp
         Amo = ao2mo(Aao, mo_coeff)
         if RK4_X: 
@@ -413,14 +414,16 @@ def kernel_rt_test_RK4(mf, t, l, U, w, f0, tp, tf, step, RK4_X=False):
         tmp  = einsum('rp,qr->qp',X,d1)
         tmp -= einsum('qr,rp->qp',X,d1)
         RHS = C + tmp
-        U = np.dot(U, scipy.linalg.expm(step*X))
-        mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
-        print('time: {:.4f}, d1: {}, d0: {}, A: {}, A0: {}, A.imag: {}, normX: {}'.format(
-               i*step, np.linalg.norm(LHS-RHS), np.linalg.norm(LHS0-C0), 
-               abs(dA/step-HA), abs(dA0/step-HA0), A_old.imag, np.linalg.norm(X)))
-#        print('time: {:.4f}, d1: {}, d0: {}, A: {}, A0: {}, A.imag: {}'.format(
-#               i*step, np.linalg.norm(LHS-RHS), np.linalg.norm(LHS0-C0), 
-#               abs(dA/step-HA), abs(dA0/step-HA0), A_old.imag))
+        if orb:
+            U = np.dot(U, scipy.linalg.expm(step*X))
+            mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
+            print('time: {:.4f}, d1: {}, d0: {}, A: {}, A0: {}, A.imag: {}, normX: {}'.format(
+                   i*step, np.linalg.norm(LHS-RHS), np.linalg.norm(LHS0-C0), 
+                   abs(dA/step-HA), abs(dA0/step-HA0), A_old.imag, np.linalg.norm(X)))
+        else:
+            print('time: {:.4f}, d1: {}, d0: {}, A: {}, A0: {}, A.imag: {}'.format(
+                   i*step, np.linalg.norm(LHS-RHS), np.linalg.norm(LHS0-C0), 
+                   abs(dA/step-HA), abs(dA0/step-HA0), A_old.imag))
         if np.linalg.norm(LHS-RHS) > 1.0:
             print('diverging error!')
             break
@@ -428,7 +431,7 @@ def kernel_rt_test_RK4(mf, t, l, U, w, f0, tp, tf, step, RK4_X=False):
     print('check trace: {}'.format(tr))
 
 
-def kernel_rt_test(mf, t, l, U, w, f0, tp, tf, step):
+def kernel_rt_test(mf, t, l, U, w, f0, tp, tf, step, orb=True):
     nao = mf.mol.nao_nr()
     mu_ao = mf.mol.intor('int1e_r')
     hao  = mu_ao[0,:,:] * f0[0]
@@ -457,7 +460,8 @@ def kernel_rt_test(mf, t, l, U, w, f0, tp, tf, step):
         eris.ao2mo(mo_coeff)
         if i <= td:
             evlp = math.sin(math.pi*i/td)**2
-            osc = math.cos(w*(i*step-tp)) 
+#            osc = math.cos(w*(i*step-tp)) 
+            osc = math.sin(w*i*step) 
             eris.h += ao2mo(hao, mo_coeff) * osc * evlp
         Amo = ao2mo(Aao, mo_coeff)
         dt = update_t(t, eris, X) # idt
@@ -493,15 +497,16 @@ def kernel_rt_test(mf, t, l, U, w, f0, tp, tf, step):
 #        print(abs(einsum('pq,pq',Amo,diff)))
 #        print(np.linalg.norm(np.dot(Amo,diff)))
 #        print(abs(np.trace(np.dot(Amo,diff))))
-
-        U = np.dot(U, scipy.linalg.expm(step*X))
-        mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
-        print('time: {:.4f}, d1: {}, d0: {}, A: {}, A0: {}, A.imag: {}, normX: {}'.format(
-               i*step, np.linalg.norm(LHS-RHS), np.linalg.norm(LHS0-C0), 
-               abs(dA/step-HA), abs(dA0/step-HA0), A_old.imag, np.linalg.norm(X)))
-#        print('time: {:.4f}, d1: {}, d0: {}, A: {}, A0: {}, A.imag: {}'.format(
-#               i*step, np.linalg.norm(LHS-RHS), np.linalg.norm(LHS0-C0), 
-#               abs(dA/step-HA), abs(dA0/step-HA0), A_old.imag))
+        if orb: 
+           U = np.dot(U, scipy.linalg.expm(step*X))
+           mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
+           print('time: {:.4f}, d1: {}, d0: {}, A: {}, A0: {}, A.imag: {}, normX: {}'.format(
+                  i*step, np.linalg.norm(LHS-RHS), np.linalg.norm(LHS0-C0), 
+                  abs(dA/step-HA), abs(dA0/step-HA0), A_old.imag, np.linalg.norm(X)))
+        else:
+           print('time: {:.4f}, d1: {}, d0: {}, A: {}, A0: {}, A.imag: {}'.format(
+                  i*step, np.linalg.norm(LHS-RHS), np.linalg.norm(LHS0-C0), 
+                  abs(dA/step-HA), abs(dA0/step-HA0), A_old.imag))
         if np.linalg.norm(LHS-RHS) > 1.0:
             print('diverging error!')
             break
@@ -543,7 +548,8 @@ def kernel_rt_RK4(mf, t, l, U, w, f0, tp, tf, step, RK4_X=False):
         eris.ao2mo(mo_coeff)
         if i <= td:
             evlp = math.sin(math.pi*i/td)**2
-            osc = math.cos(w*(i*step-tp)) 
+#            osc = math.cos(w*(i*step-tp)) 
+            osc = math.sin(w*i*step) 
             eris.h += ao2mo(hao, mo_coeff) * evlp * osc
         mux_mo = ao2mo(mu_ao[0,:,:], mo_coeff)
         muy_mo = ao2mo(mu_ao[1,:,:], mo_coeff)
@@ -610,7 +616,8 @@ def kernel_rt(mf, t, l, U, w, f0, tp, tf, step):
         eris.ao2mo(mo_coeff)
         if i <= td:
             evlp = math.sin(math.pi*i/td)**2
-            osc = math.cos(w*(i*step-tp)) 
+#            osc = math.cos(w*(i*step-tp)) 
+            osc = math.sin(w*i*step) 
             eris.h += ao2mo(hao, mo_coeff) * evlp * osc
         mux_mo = ao2mo(mu_ao[0,:,:], mo_coeff)
         muy_mo = ao2mo(mu_ao[1,:,:], mo_coeff)
