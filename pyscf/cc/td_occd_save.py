@@ -157,6 +157,98 @@ def compute_rdms(t, l, normal=False, symm=True):
         d2 = 0.5 * (d2 + d2.transpose(2,3,0,1).conj())
     return d1, d2
 
+def compute_X_(d1, d2, eris, res_t, res_l, t, l):
+    nmo = d1.shape[0]
+    no = res_l.shape[0]
+    nv = nmo - no
+    A  = einsum('vp,qu->uvpq',np.eye(nmo),d1)
+    A -= einsum('qu,vp->uvpq',np.eye(nmo),d1)
+    Aovvo = A[:no,no:,no:,:no].copy()
+    Avoov = A[no:,:no,:no,no:].copy()
+    Aoooo = A[:no,:no,:no,:no].copy()
+    Avvvv = A[no:,no:,no:,no:].copy()
+    print('A symm: {}'.format(np.linalg.norm(A+A.transpose(1,0,3,2).conj())))
+#    exit()
+
+    C  = einsum('vp,pu->uv',d1,eris.h)
+    C -= einsum('pu,vp->uv',d1,eris.h)
+    C += 0.5 * einsum('pqus,vspq->uv',eris.eri,d2)
+    C -= 0.5 * einsum('vqrs,rsuq->uv',eris.eri,d2)
+    Cov = C[:no,no:].copy()
+    Cvo = C[no:,:no].copy()
+    print('C symm: {}'.format(np.linalg.norm(C+C.T.conj())))
+
+    B = np.zeros((nmo,nmo),dtype=complex)
+    B[:no,:no] += einsum('abuj,vjab->uv',res_t,l) # res_t = i*dt
+    B[:no,:no] -= einsum('abvj,ujab->uv',res_t,l).conj()
+    B[no:,no:] -= einsum('vbij,ijub->uv',res_t,l)
+    B[no:,no:] += einsum('ubij,ijvb->uv',res_t,l).conj()
+
+    B[:no,:no] -= einsum('vjab,abuj->uv',res_l,t) # res_l = -i*dl
+    B[:no,:no] += einsum('ujab,abvj->uv',res_l,t).conj() 
+    B[no:,no:] += einsum('ijub,vbij->uv',res_l,t)
+    B[no:,no:] -= einsum('ijvb,ubij->uv',res_l,t).conj()
+    print('B symm: {}'.format(np.linalg.norm(B+B.T.conj())))
+
+    Aoooo = Aoooo.reshape(no*no,no*no)
+    Avvvv = Avvvv.reshape(nv*nv,nv*nv)
+    print('Aoooo det: {}'.format(abs(np.linalg.det(Aoooo))))
+    print('Avvvv det: {}'.format(abs(np.linalg.det(Avvvv))))
+    Aovvo = Aovvo.reshape(no*nv,nv*no)
+    Avoov = Avoov.reshape(nv*no,no*nv)
+    Cov = Cov.reshape(no*nv)
+    Cvo = Cvo.reshape(nv*no)
+    
+    Xvo = 1j * np.dot(np.linalg.inv(Aovvo),Cov)
+    Xov = 1j * np.dot(np.linalg.inv(Avoov),Cvo)
+    Xvo = Xvo.reshape(nv,no)
+    Xov = Xov.reshape(no,nv)
+    
+    X = np.zeros((nmo,nmo),dtype=complex)
+    X[:no,no:] = Xov.copy()
+    X[no:,:no] = Xvo.copy()
+    print('X symm: {}'.format(np.linalg.norm(X+X.T.conj())))
+    check = einsum('uvpq,pq->uv',A,-1j*X) + B - C
+    print('ov: {}'.format(np.linalg.norm(check[:no,no:])))
+    print('vo: {}'.format(np.linalg.norm(check[no:,:no])))
+    print('oo: {}'.format(np.linalg.norm(check[:no,:no])))
+    print('vv: {}'.format(np.linalg.norm(check[no:,no:])))
+    exit()
+
+    check = einsum('uvpq,pq->uv',A,-1j*C) + B - C
+    print('ov: {}'.format(np.linalg.norm(check[:no,no:])))
+    print('vo: {}'.format(np.linalg.norm(check[no:,:no])))
+    print('oo: {}'.format(np.linalg.norm(check[:no,:no])))
+    print('vv: {}'.format(np.linalg.norm(check[no:,:no])))
+    print('symm: {}'.format(np.linalg.norm(check+check.T.conj())))
+
+    def compute_grad(iX, A, B, C):
+        tmp = einsum('uvpq,pq->uv',A,iX) + B - C
+        grad  = einsum('uvpq,uv->pq',A,tmp.conj())
+        grad -= einsum('vupq,uv->pq',A,tmp)
+        return grad, np.linalg.norm(tmp)
+    grad_oo, res_oo = compute_grad(-1j*C[:no,:no], A[:no,:no,:no,:no], B[:no,:no], C[:no,:no])
+    print(np.linalg.norm(grad_oo-grad_oo.T.conj()), res_oo)
+    grad_vv, res_vv = compute_grad(-1j*C[no:,no:], A[no:,no:,no:,no:], B[no:,no:], C[no:,no:])
+    print(np.linalg.norm(grad_vv-grad_vv.T.conj()), res_vv)
+    maxiter = 20
+    thresh = 1e-6
+    step = 0.05
+    def lstsq(A, B, C):
+        iX = -1j*C
+        for i in range(maxiter): 
+            grad, res = compute_grad(iX, A, B, C)
+            dnorm = np.linalg.norm(grad)
+            print('iter: {}, res: {}, dnorm: {}'.format(i, res, dnorm))
+            if dnorm < thresh:
+                break
+            iX -= step * grad
+        return 1j*iX
+    Xoo = lstsq(A[:no,:no,:no,:no],B[:no,:no],C[:no,:no])
+    Xvv = lstsq(A[no:,no:,no:,no:],B[no:,no:],C[no:,no:])
+#    exit()
+    return X, 1j*B.T, 1j*C.T 
+
 def compute_kappa(d1, d2, eris, res_t, res_l, t, l):
     nmo = d1.shape[0]
     no = res_l.shape[0]
