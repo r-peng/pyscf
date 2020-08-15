@@ -218,14 +218,14 @@ def compute_X_(d1, d2, eris, res_t, res_l, t, l):
     nv = nmo - no
     A  = einsum('vp,qu->uvpq',np.eye(nmo),d1)
     A -= einsum('qu,vp->uvpq',np.eye(nmo),d1)
-    print('A symm: {}'.format(np.linalg.norm(A+A.transpose(1,0,3,2).conj())))
+#    print('A symm: {}'.format(np.linalg.norm(A+A.transpose(1,0,3,2).conj())))
 #    exit()
 
     C  = einsum('vp,pu->uv',d1,eris.h)
     C -= einsum('pu,vp->uv',d1,eris.h)
     C += 0.5 * einsum('pqus,vspq->uv',eris.eri,d2)
     C -= 0.5 * einsum('vqrs,rsuq->uv',eris.eri,d2)
-    print('C symm: {}'.format(np.linalg.norm(C+C.T.conj())))
+#    print('C symm: {}'.format(np.linalg.norm(C+C.T.conj())))
 
     B = np.zeros((nmo,nmo),dtype=complex)
     B[:no,:no] += einsum('abuj,vjab->uv',res_t,l) # res_t = i*dt
@@ -237,19 +237,19 @@ def compute_X_(d1, d2, eris, res_t, res_l, t, l):
     B[:no,:no] += einsum('ujab,abvj->uv',res_l,t).conj() 
     B[no:,no:] += einsum('ijub,vbij->uv',res_l,t)
     B[no:,no:] -= einsum('ijvb,ubij->uv',res_l,t).conj()
-    print('B symm: {}'.format(np.linalg.norm(B+B.T.conj())))
+#    print('B symm: {}'.format(np.linalg.norm(B+B.T.conj())))
 
     RHS = C - B
-    print('RHS symm: {}'.format(np.linalg.norm(RHS+RHS.T.conj())))
+#    print('RHS symm: {}'.format(np.linalg.norm(RHS+RHS.T.conj())))
 
     Aovvo = A[:no,no:,no:,:no].copy().reshape(no*nv,nv*no)
     Avoov = A[no:,:no,:no,no:].copy().reshape(nv*no,no*nv)
     Aoooo = A[:no,:no,:no,:no].copy().reshape(no*no,no*no)
     Avvvv = A[no:,no:,no:,no:].copy().reshape(nv*nv,nv*nv)
-    print('Aovvo det: {}'.format(abs(np.linalg.det(Aovvo))))
-    print('Avoov det: {}'.format(abs(np.linalg.det(Avoov))))
-    print('Aoooo det: {}'.format(abs(np.linalg.det(Aoooo))))
-    print('Avvvv det: {}'.format(abs(np.linalg.det(Avvvv))))
+#    print('Aovvo det: {}'.format(abs(np.linalg.det(Aovvo))))
+#    print('Avoov det: {}'.format(abs(np.linalg.det(Avoov))))
+#    print('Aoooo det: {}'.format(abs(np.linalg.det(Aoooo))))
+#    print('Avvvv det: {}'.format(abs(np.linalg.det(Avvvv))))
     RHSov = RHS[:no,no:].copy().reshape(no*nv)
     RHSvo = RHS[no:,:no].copy().reshape(nv*no)
     RHSoo = RHS[:no,:no].copy().reshape(no*no)
@@ -261,20 +261,19 @@ def compute_X_(d1, d2, eris, res_t, res_l, t, l):
     X = np.zeros((nmo,nmo),dtype=complex)
     X[:no,no:] = Xov.reshape(no,nv).copy()
     X[no:,:no] = Xvo.reshape(nv,no).copy()
-    print('X symm: {}'.format(np.linalg.norm(X+X.T.conj())))
+#    print('X symm: {}'.format(np.linalg.norm(X+X.T.conj())))
     check = einsum('uvpq,pq->uv',A,-1j*X) + B - C
-    print('ov: {}'.format(np.linalg.norm(check[:no,no:])))
-    print('vo: {}'.format(np.linalg.norm(check[no:,:no])))
+    print('ov/vo: {}'.format(np.linalg.norm(check[:no,no:])+np.linalg.norm(check[no:,:no])))
     print('oo: {}'.format(np.linalg.norm(check[:no,:no])))
     print('vv: {}'.format(np.linalg.norm(check[no:,no:])))
 
 #    Xvv = scipy.linalg.solve(Avvvv,RHSvv) 
-    Xvv, _, _, _ = scipy.linalg.lstsq(Avvvv,RHSvv) 
-    Xoo, _, _, _ = scipy.linalg.lstsq(Aoooo,RHSoo)
-    Xvv = 1j * Xvv.reshape(nv,nv)
-    Xoo = 1j * Xoo.reshape(no,no)
-    print('Xvv symm: {}'.format(np.linalg.norm(Xvv+Xvv.T.conj())))
-    print('Xoo symm: {}'.format(np.linalg.norm(Xoo+Xoo.T.conj())))
+#    Xvv, _, _, _ = scipy.linalg.lstsq(Avvvv,RHSvv) 
+#    Xoo, _, _, _ = scipy.linalg.lstsq(Aoooo,RHSoo)
+#    Xvv = 1j * Xvv.reshape(nv,nv)
+#    Xoo = 1j * Xoo.reshape(no,no)
+#    print('Xvv symm: {}'.format(np.linalg.norm(Xvv+Xvv.T.conj())))
+#    print('Xoo symm: {}'.format(np.linalg.norm(Xoo+Xoo.T.conj())))
     return X, 1j*B.T, 1j*C.T 
 
 def compute_X(d1, d2, eris, no):
@@ -349,7 +348,8 @@ def kernel_rt_test(mf, t, l, U, w, f0, tp, tf, step, RK4=True, orb=True):
             eris.h += ao2mo(hao, mo_coeff) * osc * evlp
         dt, dl = update_RK4(t, l, eris, step, RK4=RK4)
         d1, d2 = compute_rdms(t, l)
-        X, C = compute_X(d1, d2, eris, no) # C_qp = i<[H,p+q]>
+#        X, C = compute_X(d1, d2, eris, no) # C_qp = i<[H,p+q]>
+        X, B, C = compute_X_(d1, d2, eris, 1j*dt,-1j*dl, t, l) # C_qp = i<[H,p+q]>
         t += step * dt
         l += step * dl
         d0 = einsum('qp,vq,up->vu',d1,U,U.conj()) # in stationary HF basis
@@ -361,26 +361,28 @@ def kernel_rt_test(mf, t, l, U, w, f0, tp, tf, step, RK4=True, orb=True):
         tmp  = einsum('rp,qr->qp',X,d1)
         tmp -= einsum('qr,rp->qp',X,d1)
         RHS = C + tmp
-#        LHS_  = einsum('vu,up,vq->qp',LHS0,U,U.conj())
-#        dU = np.dot(U, X)
-#        tmp_  = einsum('vu,up,vq->qp',d0,dU,U.conj())
-#        tmp_ += einsum('vu,up,vq->qp',d0,U,dU.conj())
-#        LHS_ += tmp_.copy()
-#        diff = LHS - LHS_
-#        print(np.linalg.norm(diff))
+#
+        LHS_  = einsum('vu,up,vq->qp',LHS0,U,U.conj())
+        dU = np.dot(U, X)
+        tmp_  = einsum('vu,up,vq->qp',d0,dU,U.conj())
+        tmp_ += einsum('vu,up,vq->qp',d0,U,dU.conj())
+        LHS_ += tmp_.copy()
+        diff = LHS - LHS_
+        print('diff oo, vv, ov, vo: ', np.linalg.norm(diff[:no,:no]), np.linalg.norm(diff[no:,no:]), np.linalg.norm(diff[:no,no:]), np.linalg.norm(diff[no:,:no]))
+#
         error = LHS-RHS
         if orb:
             U = np.dot(U, scipy.linalg.expm(step*X))
+#            U += dU * step 
             mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
-            print('time: {:.4f}, d1: {}, d1(ov/vo): {}, d0: {}, normX: {}'.format(
-                   i*step, np.linalg.norm(error), 
+            print('time: {:.4f}, d1(oo): {}, d1(vv): {}, d1(ov/vo): {}, d0: {}, normX: {}'.format(i*step,np.linalg.norm(error[:no,:no]), np.linalg.norm(error[no:,no:]), 
                    np.linalg.norm(RHS[:no,no:])+np.linalg.norm(RHS[no:,:no]), 
                    np.linalg.norm(LHS0-C0), np.linalg.norm(X)))
         else:
             print('time: {:.4f}, d1: {}, d1(ov/vo): {}, d0: {}'.format(
                    i*step, np.linalg.norm(error), 
                    np.linalg.norm(RHS[:no,no:])+np.linalg.norm(RHS[no:,:no]), 
-                   np.linalg.norm(LHS0-C0)) 
+                   np.linalg.norm(LHS0-C0))) 
         if np.linalg.norm(error) > 1.0:
             print('diverging error!')
             break
@@ -445,7 +447,7 @@ def kernel_rt(mf, t, l, U, w, f0, tp, tf, step, RK4=True):
         error += (muy[i+1]-muy[i])/step - Hmuy[i] 
         error += (muz[i+1]-muz[i])/step - Hmuz[i]
         imag  = mux[i+1].imag + muy[i+1].imag + muz[i+1].imag 
-        print('time: {:.4f}, ehrenfest: {}, imag: {}, E.imag: {},'.format(i*step, abs(error), imag, E[i].imag))
+        print('time: {:.4f}, ehrenfest: {}, imag: {}, E.imag: {}'.format(i*step, abs(error), imag, E[i].imag))
 #        print('mux: {}, muy: {}, muz: {}'.format(mux[i+1].real,muy[i+1].real,muz[i+1].real))
     return mux, muy, muz, E
 
