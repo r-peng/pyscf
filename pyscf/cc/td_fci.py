@@ -1,124 +1,146 @@
-from pyscf.fci import direct_spin1, direct_uhf
+from pyscf.fci import direct_spin1, direct_uhf, cistring
+from pyscf import lib
+import numpy as np
+import math
+einsum = lib.einsum
 
-def hop_uhf(hao, eri_ao, mo_coeff, nelec):
-    moa, mob = mo_coeff
-    nmoa = moa.shape[0]
-    ha = einsum('uv,up,vq->pq',hao,moa.conj(),moa)
-    hb = einsum('uv,up,vq->pq',hao,mob.conj(),mob)
-    
-    eri_aa = einsum('uvxy,up,vr->prxy',eri_ao,moa.conj(),moa)
-    eri_aa = einsum('prxy,xq,ys->prqs',eri_aa,moa.conj(),moa)
-    eri_bb = einsum('uvxy,up,vr->prxy',eri_ao,mob.conj(),mob)
-    eri_bb = einsum('prxy,xq,ys->prqs',eri_bb,mob.conj(),mob)
-    eri_ab = einsum('uvxy,up,vr->prxy',eri_ao,moa.conj(),moa)
-    eri_ab = einsum('prxy,xq,ys->prqs',eri_ab,mob.conj(),mob)
-
-    h1e = (ha, hb)
-    eri = (eri_aa, eri_ab, eri_bb)
-    h2e = direct_uhf.absorb(h1e, eri, nmoa, nelec, 0.5)
-    def _hop(c):
-        return direct_uhf.contract_2e(h2e, c, nmoa, nelec)
-    return _hop
-
-def hop_rhf(hao, eri_ao, mo_coeff, nelec):
-    nmo = moa.shape[0]
-    h1e = einsum('uv,up,vq->pq',hao,mo_coeff.conj(),mo_coeff)
-    eri = einsum('uvxy,up,vr->prxy',eri_ao,mo_coeff.conj(),mo_coeff)
-    eri = einsum('prxy,xq,ys->prqs',eri   ,mo_coeff.conj(),mo_coeff)
-    h2e = direct_spin1.absorb(h1e, eri, nmo, nelec, 0.5)
+def update_ci(c, h1e, eri, E0, nelec, it=False):
+    nmo = h1e.shape[0]
+    h2e = direct_spin1.absorb_h1e(h1e, eri, nmo, nelec, 0.5)
     def _hop(c):
         return direct_spin1.contract_2e(h2e, c, nmo, nelec)
-    return _hop
+    Hc = _hop(c)
+    Hc -= E0
+    if it: 
+        return - Hc
+    else: 
+        return -1j * Hc
 
-def update_ci(c, hao, eri_ao, mo_coeff, nelec, uhf):
-    if uhf:
-        _hop = hop_uhf(hao, eri_ao, mo_coeff, nelec)
-    else:
-        _hop = hop_rhf(hao, eri_ao, mo_coeff, nelec)
-    return -1j * _hop(c)
-
-def update_RK4(c, hao, eri_ao, mo_coeff, nelec, step, uhf=False, RK4=True):
-    dc1 = update_ci(c, hao, eri_ao, mo_coeff, nelec, uhf)
+def update_RK4(c, h1e, eri, E0, nelec, step, RK4=True, it=False):
+    dc1 = update_ci(c, h1e, eri, E0, nelec, it=it)
     if not RK4:
         return dc1
     else: 
-        dc2 = update_ci(c+dc1*step*0.5, hao, eri_ao, mo_coeff, nelec, uhf)
-        dc3 = update_ci(c+dc2*step*0.5, hao, eri_ao, mo_coeff, nelec, uhf)
-        dc4 = update_ci(c+dc3*step    , hao, eri_ao, mo_coeff, nelec, uhf)
+        dc2 = update_ci(c+dc1*step*0.5, h1e, eri, E0, nelec, it=it)
+        dc3 = update_ci(c+dc2*step*0.5, h1e, eri, E0, nelec, it=it)
+        dc4 = update_ci(c+dc3*step    , h1e, eri, E0, nelec, it=it)
         return (dc1+2.0*dc2+2.0*dc3+dc4)/6.0
 
-def kernel_rt_test(mf, c, w, f0, tp, tf, step, uhf=False, RK4=True):
+def compute_energy(d1, d2, h1e, eri):
+    d2aa, d2ab, d2bb = d2
+    d2aa = d2aa.transpose(0,2,1,3)
+    d2ab = d2ab.transpose(0,2,1,3)
+    d2bb = d2bb.transpose(0,2,1,3)
+    eri_ab = eri.transpose(0,2,1,3)
+    eri_aa = eri_ab - eri_ab.transpose(0,1,3,2)
+    e  = einsum('pq,qp',h1e,d1[0])
+    e += einsum('PQ,QP',h1e,d1[1])
+    e += 0.25 * einsum('pqrs,rspq',eri_aa,d2aa)
+    e += 0.25 * einsum('PQRS,RSPQ',eri_aa,d2bb)
+    e +=        einsum('pQrS,rSpQ',eri_ab,d2ab)
+    return e
+
+def compute_RHS(d1, d2, h1e, eri):
+    d2aa, d2ab, d2bb = d2
+    d2aa = d2aa.transpose(0,2,1,3)
+    d2ab = d2ab.transpose(0,2,1,3)
+    d2bb = d2bb.transpose(0,2,1,3)
+    eri_ab = eri.transpose(0,2,1,3)
+    eri_aa = eri_ab - eri_ab.transpose(0,1,3,2)
+
+    def compute_imd(d1a, d2aa, d2ab, h1e, eri_aa, eri_ab):
+        C  = einsum('vp,pu->uv',d1a,h1e)
+        C -= einsum('qu,vq->uv',d1a,h1e)
+        C += 0.5 * einsum('pqus,vspq->uv',eri_aa,d2aa)
+        C +=       einsum('pQuS,vSpQ->uv',eri_ab,d2ab)
+        C -= 0.5 * einsum('vqrs,rsuq->uv',eri_aa,d2aa)
+        C -=       einsum('vQrS,rSuQ->uv',eri_ab,d2ab)
+        return C
+    Ca = compute_imd(d1[0], d2aa, d2ab, h1e, eri_aa, eri_ab)
+    Cb = compute_imd(d1[1], d2bb, d2ab.transpose(1,0,3,2), h1e, eri_aa, eri_ab.transpose(1,0,3,2))
+    return 1j*Ca.T, 1j*Cb.T
+
+def kernel_it(mf, step=0.01, maxiter=1000, thresh=1e-6, RK4=True):
     nao = mf.mol.nao_nr()
+    nelec = mf.mol.nelec
+    E0 = mf.energy_elec()[0]
+    E0 = 0.0
+    Enuc = mf.energy_nuc()
+
+    hao = mf.get_hcore()
+    eri_ao = mf.mol.intor('int2e_sph')
+    
+    h = einsum('uv,up,vq->pq',hao,mf.mo_coeff.conj(),mf.mo_coeff)
+    eri = einsum('uvxy,up,vr->prxy',eri_ao,mf.mo_coeff.conj(),mf.mo_coeff)
+    eri = einsum('prxy,xq,ys->prqs',eri   ,mf.mo_coeff.conj(),mf.mo_coeff)
+
+    N = cistring.num_strings(nao, nelec[0])
+    c = np.zeros((N,N))
+    c[0,0] = 1.0
+    E_old = mf.energy_elec()[0]
+    d1, d2 = direct_spin1.make_rdm12s(c, nao, nelec)
+    for i in range(maxiter):
+        dc = update_RK4(c, h, eri, E0, nelec, step, RK4=RK4, it=True)
+        c += step * dc
+        c /= np.linalg.norm(c)
+        d1, d2 = direct_spin1.make_rdm12s(c, nao, nelec)
+        E = compute_energy(d1, d2, h, eri)
+        dnorm = np.linalg.norm(dc)
+        dE, E_old = E-E_old, E
+        print('iter: {}, dnorm: {}, dE: {}, E: {}'.format(i, dnorm, dE, E))
+        if abs(dE) < thresh:
+            break
+    return c, E
+
+def kernel_rt_test(mf, c, w, f0, tp, tf, step, RK4=True):
+    nao = mf.mol.nao_nr()
+    nelec = mf.mol.nelec
+    E0 = 0.0
+
+    hao = mf.get_hcore()
+    eri_ao = mf.mol.intor('int2e_sph')
     mu_ao = mf.mol.intor('int1e_r')
-    hao  = mu_ao[0,:,:] * f0[0]
-    hao += mu_ao[1,:,:] * f0[1]
-    hao += mu_ao[2,:,:] * f0[2]
+    hao_td = einsum('xuv,x->uv',mu_ao,f0)
+
+    h = einsum('uv,up,vq->pq',hao,mf.mo_coeff.conj(),mf.mo_coeff)
+    htd = einsum('uv,up,vq->pq',hao_td,mf.mo_coeff.conj(),mf.mo_coeff)
+    eri = einsum('uvxy,up,vr->prxy',eri_ao,mf.mo_coeff.conj(),mf.mo_coeff)
+    eri = einsum('prxy,xq,ys->prqs',eri   ,mf.mo_coeff.conj(),mf.mo_coeff)
 
     td = 2 * int(tp/step)
     maxiter = int(tf/step)
-    no, _, nv, _ = l.shape
+    c = np.array(c,dtype=complex)
 
-    Aao = np.random.rand(nao,nao)
-#    Aao += Aao.T
-    Amo0 = ao2mo(Aao, (mo0,mo0)) # in stationary HF basis
-    d1_old, d2 = compute_rdms(t, l)
-    d0_old = einsum('qp,vq,up->vu',d1_old,U,U.conj()) # in stationary HF basis
-    Amo = ao2mo(Aao, mo_coeff)
-    A_old = einsum('pq,qp',Amo,d1_old)
-    A0_old = einsum('pq,qp',Amo0,d0_old)
-    tr = abs(np.trace(d1_old)-no)
+    d1_old = direct_spin1.make_rdm1s(c, nao, nelec)
+    tr  = abs(np.trace(d1_old[0])-nelec[0])
+    print('check trace: {}'.format(tr))
+    tr  = abs(np.trace(d1_old[1])-nelec[1])
+    print('check trace: {}'.format(tr))
+    print(d1_old[0].real)
+    print(d1_old[0].imag)
+    print(d1_old[1].real)
+    print(d1_old[1].imag)
+    exit()
     for i in range(maxiter):
-        eris.ao2mo(mo_coeff)
+        h1e = h.copy()
         if i <= td:
             evlp = math.sin(math.pi*i/td)**2
-#            osc = math.cos(w*(i*step-tp)) 
             osc = math.sin(w*i*step) 
-            eris.h += ao2mo(hao, mo_coeff) * osc * evlp
-        Amo = ao2mo(Aao, mo_coeff)
-        dt, dl, X, C, d1, d2 = update_RK4(t, l, X, eris, step, RK4=RK4, RK4_X=RK4_X)
-        t += step * dt
-        l += step * dl
-        d0 = einsum('qp,vq,up->vu',d1,U,U.conj()) # in stationary HF basis
-        A = einsum('pq,qp',Amo,d1)
-        A0 = einsum('pq,qp',Amo0,d0)
-        dd1, d1_old = d1-d1_old, d1.copy()
-        dd0, d0_old = d0-d0_old, d0.copy()
-        dA, A_old = A-A_old, A
-        dA0, A0_old = A0-A0_old, A0
-        LHS = dd1/step
-        LHS0 = dd0/step
-        C0 = einsum('qp,vq,up->vu',C,U,U.conj()) # in stationary HF basis
-        HA = einsum('pq,qp',Amo,C)
-        HA0 = einsum('pq,qp',Amo0,C0)
-        tmp  = einsum('rp,qr->qp',X,d1)
-        tmp -= einsum('qr,rp->qp',X,d1)
-        RHS = C + tmp
-#        LHS_  = einsum('vu,up,vq->qp',LHS0,U,U.conj())
-#        dU = np.dot(U, X)
-#        tmp_  = einsum('vu,up,vq->qp',d0,dU,U.conj())
-#        tmp_ += einsum('vu,up,vq->qp',d0,U,dU.conj())
-#        LHS_ += tmp_.copy()
-#        diff = LHS - LHS_
-#        print(np.linalg.norm(diff))
-        error = LHS-RHS
-        if orb:
-            U = np.dot(U, scipy.linalg.expm(step*X))
-            mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
-            print('time: {:.4f}, d1: {}, d1(ov/vo): {}, d0: {}, A: {}, A0: {}, A.imag: {}, normX: {}'.format(
-                   i*step, np.linalg.norm(error), 
-                   np.linalg.norm(error[:no,no:])+np.linalg.norm(error[no:,:no]), 
-                   np.linalg.norm(LHS0-C0), 
-                   abs(dA/step-HA), abs(dA0/step-HA0), A_old.imag, np.linalg.norm(X)))
-        else:
-            print('time: {:.4f}, d1: {}, d1(ov/vo): {}, d0: {}, A: {}, A0: {}, A.imag: {}'.format(
-                   i*step, np.linalg.norm(error), 
-                   np.linalg.norm(error[:no,no:])+np.linalg.norm(error[no:,:no]), 
-                   np.linalg.norm(LHS0-C0), 
-                   abs(dA/step-HA), abs(dA0/step-HA0), A_old.imag))
-        if np.linalg.norm(error) > 1.0:
+            h1e += htd.copy() * osc * evlp
+        dc = update_RK4(c, h1e, eri, E0, nelec, step, RK4=RK4, it=False)
+        c += step * dc
+        c /= np.linalg.norm(c)
+        d1, d2 = direct_spin1.make_rdm12s(c, nao, nelec)
+        dd1, d1_old = (d1[0]-d1_old[0], d1[1]-d1_old[1]), d1
+        LHS = dd1[0]/step, dd1[1]/step
+        RHS = compute_RHS(d1, d2, h1e, eri)
+        error = np.linalg.norm(LHS[0]-RHS[0]), np.linalg.norm(LHS[1]-RHS[1])
+        print('time: {:.4f}, d1a: {}, d1b: {}'.format(i*step, error[0], error[1]))
+        if sum(error) > 1.0:
             print('diverging error!')
             break
-        tr += abs(np.trace(d1_old)-no)
+        tr += abs(np.trace(d1_old[0])-nelec[0])
+        tr += abs(np.trace(d1_old[1])-nelec[1])
     print('check trace: {}'.format(tr))
 
 def kernel_rt(mf, t, l, U, w, f0, tp, tf, step, RK4=True, RK4_X=False):

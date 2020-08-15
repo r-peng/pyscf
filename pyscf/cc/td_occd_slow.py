@@ -26,10 +26,10 @@ def sort2(tup, anti):
         out[1::2, ::2, ::2,1::2] = - ab.transpose(1,0,2,3).copy()
     return out
 
-def update_t(t, eris, X):
+def update_t(t, eris):
     no = t.shape[3]
     eri = eris.eri.copy()
-    f  = eris.h.copy() - 1j*X
+    f  = eris.h.copy()
     f += einsum('piqi->pq',eri[:,:no,:,:no])
 
     Foo  = f[:no,:no].copy()
@@ -56,10 +56,10 @@ def update_t(t, eris, X):
     dt += tmp.copy()
     return dt
 
-def update_l(t, l, eris, X):
+def update_l(t, l, eris):
     no = t.shape[3]
     eri = eris.eri.copy()
-    f  = eris.h.copy() - 1j*X
+    f  = eris.h.copy()
     f += einsum('piqi->pq',eri[:,:no,:,:no])
 
     Foo  = f[:no,:no].copy()
@@ -96,10 +96,10 @@ def update_l(t, l, eris, X):
     dl += tmp.copy()
     return dl
 
-def update_amps(t, l, eris, X, update_X=False):
+def update_amps(t, l, eris):
     no = t.shape[3]
     eri = eris.eri.copy()
-    f  = eris.h.copy() - 1j*X
+    f  = eris.h.copy()
     f += einsum('piqi->pq',eri[:,:no,:,:no])
 
     Foo  = f[:no,:no].copy()
@@ -148,14 +148,10 @@ def update_amps(t, l, eris, X, update_X=False):
     tmp += tmp.transpose(1,0,3,2)
     tmp -= tmp.transpose(0,1,3,2)
     dl += tmp.copy()
-
-    d1 = d2 = C = None
-    if update_X:
-        d1, d2 = compute_rdms(t, l)
-        X, C = compute_X(d1, d2, eris, no) # C_qp = i<[H,p+q]>
-    return -1j*dt, 1j*dl, X, C, d1, d2
+    return -1j*dt, 1j*dl
 
 def compute_gamma1(t, l): # normal ordered, asymmetric
+#    dvv = 0.5 * einsum('ikac,bcik->ab',l,t)
     dvv = 0.5 * einsum('ikac,bcik->ba',l,t)
     doo = - 0.5 * einsum('jkac,acik->ji',l,t)
     return doo, dvv
@@ -316,32 +312,22 @@ def ao2mo(Aao, mo_coeff):
     Ab = einsum('uv,up,vq->pq',Aao,mob.conj(),mob)
     return sort1((Aa,Ab))
 
-def update_RK4(t, l, X, eris, step, RK4, RK4_X):
-    dt1, dl1, X1, C, d1, d2 = update_amps(t, l, eris, X, update_X=True)
+def update_RK4(t, l, eris, step, RK4):
+    dt1, dl1 = update_amps(t, l, eris)
     if not RK4:
-        return dt1, dl1, X1, C, d1, d2 
+        return dt1, dl1 
     else: 
-        if RK4_X:
-            dt2, dl2, X2, _, _, _ = update_amps(t + dt1*step*0.5, l + dl1*step*0.5, eris, X + X1*step*0.5, update_X=True) 
-            dt3, dl3, X3, _, _, _ = update_amps(t + dt2*step*0.5, l + dl2*step*0.5, eris, X + X2*step*0.5, update_X=True) 
-            dt4, dl4, X4, _, _, _ = update_amps(t + dt3*step, l + dl3*step, eris, X + X3*step, update_X=True) 
-            X = (X1 + 2.0*X2 + 2.0*X3 + X4)/6.0
-        else:
-            dt2, dl2, _, _, _, _ = update_amps(t + dt1*step*0.5, l + dl1*step*0.5, eris, X, update_X=False) 
-            dt3, dl3, _, _, _, _ = update_amps(t + dt2*step*0.5, l + dl2*step*0.5, eris, X, update_X=False) 
-            dt4, dl4, _, _, _, _ = update_amps(t + dt3*step, l + dl3*step, eris, X, update_X=False) 
-            X = X1.copy() 
+        dt2, dl2 = update_amps(t + dt1*step*0.5, l + dl1*step*0.5, eris) 
+        dt3, dl3 = update_amps(t + dt2*step*0.5, l + dl2*step*0.5, eris) 
+        dt4, dl4 = update_amps(t + dt3*step, l + dl3*step, eris) 
         dt = (dt1 + 2.0*dt2 + 2.0*dt3 + dt4)/6.0
         dl = (dl1 + 2.0*dl2 + 2.0*dl3 + dl4)/6.0
-        return dt, dl, X, C, d1, d2
+        return dt, dl
 
-def kernel_rt_test(mf, t, l, U, w, f0, tp, tf, step, 
-                   RK4=True, RK4_X=False, orb=True):
+def kernel_rt_test(mf, t, l, U, w, f0, tp, tf, step, RK4=True, orb=True):
     nao = mf.mol.nao_nr()
     mu_ao = mf.mol.intor('int1e_r')
-    hao  = mu_ao[0,:,:] * f0[0]
-    hao += mu_ao[1,:,:] * f0[1]
-    hao += mu_ao[2,:,:] * f0[2]
+    hao = einsum('xuv,x->uv',mu_ao,f0)
 
     td = 2 * int(tp/step)
     maxiter = int(tf/step)
@@ -352,38 +338,26 @@ def kernel_rt_test(mf, t, l, U, w, f0, tp, tf, step,
     mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
     eris = ERIs(mf)
 
-    Aao = np.random.rand(nao,nao)
-#    Aao += Aao.T
-    Amo0 = ao2mo(Aao, (mo0,mo0)) # in stationary HF basis
     d1_old, d2 = compute_rdms(t, l)
     d0_old = einsum('qp,vq,up->vu',d1_old,U,U.conj()) # in stationary HF basis
-    Amo = ao2mo(Aao, mo_coeff)
-    A_old = einsum('pq,qp',Amo,d1_old)
-    A0_old = einsum('pq,qp',Amo0,d0_old)
     tr = abs(np.trace(d1_old)-no)
     for i in range(maxiter):
         eris.ao2mo(mo_coeff)
         if i <= td:
             evlp = math.sin(math.pi*i/td)**2
-#            osc = math.cos(w*(i*step-tp)) 
             osc = math.sin(w*i*step) 
             eris.h += ao2mo(hao, mo_coeff) * osc * evlp
-        Amo = ao2mo(Aao, mo_coeff)
-        dt, dl, X, C, d1, d2 = update_RK4(t, l, X, eris, step, RK4=RK4, RK4_X=RK4_X)
+        dt, dl = update_RK4(t, l, eris, step, RK4=RK4)
+        d1, d2 = compute_rdms(t, l)
+        X, C = compute_X(d1, d2, eris, no) # C_qp = i<[H,p+q]>
         t += step * dt
         l += step * dl
         d0 = einsum('qp,vq,up->vu',d1,U,U.conj()) # in stationary HF basis
-        A = einsum('pq,qp',Amo,d1)
-        A0 = einsum('pq,qp',Amo0,d0)
         dd1, d1_old = d1-d1_old, d1.copy()
         dd0, d0_old = d0-d0_old, d0.copy()
-        dA, A_old = A-A_old, A
-        dA0, A0_old = A0-A0_old, A0
         LHS = dd1/step
         LHS0 = dd0/step
         C0 = einsum('qp,vq,up->vu',C,U,U.conj()) # in stationary HF basis
-        HA = einsum('pq,qp',Amo,C)
-        HA0 = einsum('pq,qp',Amo0,C0)
         tmp  = einsum('rp,qr->qp',X,d1)
         tmp -= einsum('qr,rp->qp',X,d1)
         RHS = C + tmp
@@ -398,29 +372,25 @@ def kernel_rt_test(mf, t, l, U, w, f0, tp, tf, step,
         if orb:
             U = np.dot(U, scipy.linalg.expm(step*X))
             mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
-            print('time: {:.4f}, d1: {}, d1(ov/vo): {}, d0: {}, A: {}, A0: {}, A.imag: {}, normX: {}'.format(
+            print('time: {:.4f}, d1: {}, d1(ov/vo): {}, d0: {}, normX: {}'.format(
                    i*step, np.linalg.norm(error), 
-                   np.linalg.norm(error[:no,no:])+np.linalg.norm(error[no:,:no]), 
-                   np.linalg.norm(LHS0-C0), 
-                   abs(dA/step-HA), abs(dA0/step-HA0), A_old.imag, np.linalg.norm(X)))
+                   np.linalg.norm(RHS[:no,no:])+np.linalg.norm(RHS[no:,:no]), 
+                   np.linalg.norm(LHS0-C0), np.linalg.norm(X)))
         else:
-            print('time: {:.4f}, d1: {}, d1(ov/vo): {}, d0: {}, A: {}, A0: {}, A.imag: {}'.format(
+            print('time: {:.4f}, d1: {}, d1(ov/vo): {}, d0: {}'.format(
                    i*step, np.linalg.norm(error), 
-                   np.linalg.norm(error[:no,no:])+np.linalg.norm(error[no:,:no]), 
-                   np.linalg.norm(LHS0-C0), 
-                   abs(dA/step-HA), abs(dA0/step-HA0), A_old.imag))
+                   np.linalg.norm(RHS[:no,no:])+np.linalg.norm(RHS[no:,:no]), 
+                   np.linalg.norm(LHS0-C0)) 
         if np.linalg.norm(error) > 1.0:
             print('diverging error!')
             break
         tr += abs(np.trace(d1_old)-no)
     print('check trace: {}'.format(tr))
 
-def kernel_rt(mf, t, l, U, w, f0, tp, tf, step, RK4=True, RK4_X=False):
+def kernel_rt(mf, t, l, U, w, f0, tp, tf, step, RK4=True):
     nao = mf.mol.nao_nr()
     mu_ao = mf.mol.intor('int1e_r')
-    hao  = mu_ao[0,:,:] * f0[0]
-    hao += mu_ao[1,:,:] * f0[1]
-    hao += mu_ao[2,:,:] * f0[2]
+    hao = einsum('xuv,x->uv',mu_ao,f0)
 
     td = 2 * int(tp/step)
     maxiter = int(tf/step)
@@ -450,13 +420,14 @@ def kernel_rt(mf, t, l, U, w, f0, tp, tf, step, RK4=True, RK4_X=False):
         eris.ao2mo(mo_coeff)
         if i <= td:
             evlp = math.sin(math.pi*i/td)**2
-#            osc = math.cos(w*(i*step-tp)) 
             osc = math.sin(w*i*step) 
             eris.h += ao2mo(hao, mo_coeff) * evlp * osc
         mux_mo = ao2mo(mu_ao[0,:,:], mo_coeff)
         muy_mo = ao2mo(mu_ao[1,:,:], mo_coeff)
         muz_mo = ao2mo(mu_ao[2,:,:], mo_coeff)
-        dt, dl, X, C, d1, d2 = update_RK4(t, l, X, eris, step, RK4=RK4, RK4_X=RK4_X)
+        dt, dl = update_RK4(t, l, eris, step, RK4=RK4)
+        d1, d2 = compute_rdms(t, l)
+        X, C = compute_X(d1, d2, eris, no) # C_qp = i<[H,p+q]>
         t += step * dt
         l += step * dl
         mux[i+1] = einsum('pq,qp',mux_mo,d1)
