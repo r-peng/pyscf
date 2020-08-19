@@ -26,7 +26,7 @@ def sort2(tup, anti):
         out[1::2, ::2, ::2,1::2] = - ab.transpose(1,0,2,3).copy()
     return out
 
-def update_t(t, eris):
+def compute_res_t(t, eris):
     no = t.shape[3]
     eri = eris.eri.copy()
     f  = eris.h.copy()
@@ -56,7 +56,7 @@ def update_t(t, eris):
     dt += tmp.copy()
     return dt
 
-def update_l(t, l, eris):
+def compute_res_l(t, l, eris):
     no = t.shape[3]
     eri = eris.eri.copy()
     f  = eris.h.copy()
@@ -96,7 +96,23 @@ def update_l(t, l, eris):
     dl += tmp.copy()
     return dl
 
+#def update_amps(t, l, eris, X):
 def update_amps(t, l, eris):
+    T, L = compute_res(t, l, eris)
+#    no, _, nv, _ = l.shape
+#
+#
+#    T += -1j * einsum('bc,acij->abij',X[no:,no:],t)
+#    T += -1j * einsum('ac,cbij->abij',X[no:,no:],t)
+#    T -= -1j * einsum('kj,abik->abij',X[:no,:no],t)
+#    T -= -1j * einsum('ki,abkj->abij',X[:no,:no],t)
+#    L += -1j * einsum('ca,ijcb->ijab',X[no:,no:],l)
+#    L += -1j * einsum('cb,ijac->ijab',X[no:,no:],l)
+#    L -= -1j * einsum('ik,kjab->ijab',X[:no,:no],l)
+#    L -= -1j * einsum('jk,ikab->ijab',X[:no,:no],l)
+    return -1j*T, 1j*L
+
+def compute_res(t, l, eris):
     no = t.shape[3]
     eri = eris.eri.copy()
     f  = eris.h.copy()
@@ -148,10 +164,9 @@ def update_amps(t, l, eris):
     tmp += tmp.transpose(1,0,3,2)
     tmp -= tmp.transpose(0,1,3,2)
     dl += tmp.copy()
-    return -1j*dt, 1j*dl
+    return dt, dl
 
 def compute_gamma1(t, l): # normal ordered, asymmetric
-#    dvv = 0.5 * einsum('ikac,bcik->ab',l,t)
     dvv = 0.5 * einsum('ikac,bcik->ba',l,t)
     doo = - 0.5 * einsum('jkac,acik->ji',l,t)
     return doo, dvv
@@ -212,60 +227,75 @@ def compute_rdms(t, l, normal=False, symm=True):
         d2 = 0.5 * (d2 + d2.transpose(2,3,0,1).conj())
     return d1, d2
 
-def compute_X_(d1, d2, eris, res_t, res_l, t, l):
+def compute_X_(d1, d2, eris, T, L, t, l):
     nmo = d1.shape[0]
-    no = res_l.shape[0]
-    nv = nmo - no
+    no, _, nv, _ = l.shape
     A  = einsum('vp,qu->uvpq',np.eye(nmo),d1)
-    A -= einsum('qu,vp->uvpq',np.eye(nmo),d1)
-#    print('A symm: {}'.format(np.linalg.norm(A+A.transpose(1,0,3,2).conj())))
+    A -= A.transpose(1,0,3,2).conj() 
 
     C  = einsum('vp,pu->uv',d1,eris.h)
-    C -= einsum('pu,vp->uv',d1,eris.h)
     C += 0.5 * einsum('pqus,vspq->uv',eris.eri,d2)
-    C -= 0.5 * einsum('vqrs,rsuq->uv',eris.eri,d2)
-#    print('C symm: {}'.format(np.linalg.norm(C+C.T.conj())))
+    C -= C.T.conj()
 
     B = np.zeros((nmo,nmo),dtype=complex)
-    B[:no,:no] += einsum('abuj,vjab->uv',res_t,l) # res_t = i*dt
-    B[:no,:no] -= einsum('abvj,ujab->uv',res_t,l).conj()
-    B[no:,no:] -= einsum('vbij,ijub->uv',res_t,l)
-    B[no:,no:] += einsum('ubij,ijvb->uv',res_t,l).conj()
-
-    B[:no,:no] -= einsum('vjab,abuj->uv',res_l,t) # res_l = -i*dl
-    B[:no,:no] += einsum('ujab,abvj->uv',res_l,t).conj() 
-    B[no:,no:] += einsum('ijub,vbij->uv',res_l,t)
-    B[no:,no:] -= einsum('ijvb,ubij->uv',res_l,t).conj()
-#    print('B symm: {}'.format(np.linalg.norm(B+B.T.conj())))
-
+    B[:no,:no] += einsum('abuj,vjab->uv',T,l)
+    B[:no,:no] -= einsum('vjab,abuj->uv',L,t)
+    B[no:,no:] -= einsum('vbij,ijub->uv',T,l)
+    B[no:,no:] += einsum('ijub,vbij->uv',L,t)
+    B -= B.T.conj()
     RHS = C - B
-#    print('RHS symm: {}'.format(np.linalg.norm(RHS+RHS.T.conj())))
 
-    Aovvo = A[:no,no:,no:,:no].copy().reshape(no*nv,nv*no)
-    Avoov = A[no:,:no,:no,no:].copy().reshape(nv*no,no*nv)
-    Aoooo = A[:no,:no,:no,:no].copy().reshape(no*no,no*no)
-    Avvvv = A[no:,no:,no:,no:].copy().reshape(nv*nv,nv*nv)
-#    print('Aovvo det: {}'.format(abs(np.linalg.det(Aovvo))))
-#    print('Avoov det: {}'.format(abs(np.linalg.det(Avoov))))
-#    print('Aoooo det: {}'.format(abs(np.linalg.det(Aoooo))))
-#    print('Avvvv det: {}'.format(abs(np.linalg.det(Avvvv))))
+    D = np.zeros((nmo,nmo,nmo,nmo),dtype=complex)
+    tmp = einsum('vjab,abpj->vp',l,t)
+    D[:no,:no,:no,:no] -= einsum('qu,vp->uvpq',np.eye(no),tmp)
+    tmp = einsum('ijub,qbij->qu',l,t)
+    D[no:,no:,no:,no:] -= einsum('vp,qu->uvpq',np.eye(nv),tmp)
+    D -= D.transpose(2,3,0,1)
+    D -= D.transpose(1,0,3,2).conj() 
+    LHS = A + D
+    print('LHS symm: ', np.linalg.norm(LHS+LHS.transpose(1,0,3,2).conj())) 
+    print('RHS symm: ', np.linalg.norm(RHS+RHS.T.conj()))
+
+    LHS = LHS.reshape(nmo*nmo,nmo*nmo)
+    print('LHS det: {}'.format(abs(np.linalg.det(LHS))))
+    RHS = RHS.reshape(nmo*nmo)
+    X = np.dot(np.linalg.inv(LHS),RHS)
+    X = X.reshape(nmo,nmo)
+    print('X symm: {}'.format(np.linalg.norm(X-X.T.conj())))
+    LHS = LHS.reshape(nmo,nmo,nmo,nmo)
+    RHS = RHS.reshape(nmo,nmo)
+    check = einsum('uvpq,pq->uv',LHS,X) - RHS
+    print('check inv: {}'.format(np.linalg.norm(check)))
+
+    LHSovvo = LHS[:no,no:,no:,:no].copy().reshape(no*nv,nv*no)
+    LHSvoov = LHS[no:,:no,:no,no:].copy().reshape(nv*no,no*nv)
+    LHSoooo = LHS[:no,:no,:no,:no].copy().reshape(no*no,no*no)
+    LHSvvvv = LHS[no:,no:,no:,no:].copy().reshape(nv*nv,nv*nv)
+    print('LHSovvo det: {}'.format(abs(np.linalg.det(LHSovvo))))
+    print('LHSvoov det: {}'.format(abs(np.linalg.det(LHSvoov))))
+    print('LHSoooo det: {}'.format(abs(np.linalg.det(LHSoooo))))
+    print('LHSvvvv det: {}'.format(abs(np.linalg.det(LHSvvvv))))
     RHSov = RHS[:no,no:].copy().reshape(no*nv)
     RHSvo = RHS[no:,:no].copy().reshape(nv*no)
     RHSoo = RHS[:no,:no].copy().reshape(no*no)
     RHSvv = RHS[no:,no:].copy().reshape(nv*nv)
     
-    Xvo = 1j * np.dot(np.linalg.inv(Aovvo),RHSov)
-    Xov = 1j * np.dot(np.linalg.inv(Avoov),RHSvo)
+    Xvo = np.dot(np.linalg.inv(LHSovvo),RHSov)
+    Xov = np.dot(np.linalg.inv(LHSvoov),RHSvo)
+    Xoo = np.dot(np.linalg.inv(LHSoooo),RHSoo)
+    Xvv = np.dot(np.linalg.inv(LHSvvvv),RHSvv)
    
     X = np.zeros((nmo,nmo),dtype=complex)
     X[:no,no:] = Xov.reshape(no,nv).copy()
     X[no:,:no] = Xvo.reshape(nv,no).copy()
-#    print('X symm: {}'.format(np.linalg.norm(X+X.T.conj())))
-    check = einsum('uvpq,pq->uv',A,-1j*X) + B - C
+#    X[:no,:no] = Xoo.reshape(no,no).copy()
+#    X[no:,no:] = Xvv.reshape(nv,nv).copy()
+    print('X symm: {}'.format(np.linalg.norm(X-X.T.conj())))
+    check = einsum('uvpq,pq->uv',LHS,X) - RHS
     print('orb eqn oo: {}, vv: {}, ov: {}, vo: {}'.format(
            np.linalg.norm(check[:no,:no]), np.linalg.norm(check[no:,no:]), 
            np.linalg.norm(check[:no,no:]), np.linalg.norm(check[no:,:no])))
-
+    exit()
 #    Xvv = scipy.linalg.solve(Avvvv,RHSvv) 
 #    Xvv, _, _, _ = scipy.linalg.lstsq(Avvvv,RHSvv) 
 #    Xoo, _, _, _ = scipy.linalg.lstsq(Aoooo,RHSoo)
@@ -273,7 +303,7 @@ def compute_X_(d1, d2, eris, res_t, res_l, t, l):
 #    Xoo = 1j * Xoo.reshape(no,no)
 #    print('Xvv symm: {}'.format(np.linalg.norm(Xvv+Xvv.T.conj())))
 #    print('Xoo symm: {}'.format(np.linalg.norm(Xoo+Xoo.T.conj())))
-    return X, 1j*B.T, 1j*C.T 
+    return 1j*X, 1j*C.T 
 
 def compute_X(d1, d2, eris, no):
     nmo = d1.shape[0]
@@ -329,6 +359,7 @@ def kernel_rt_test(mf, t, l, U, w, f0, td, ts, RK4=True, orb=True):
     U = np.array(U, dtype=complex)
     t = np.array(t, dtype=complex)
     l = np.array(l, dtype=complex)
+    X = np.zeros_like(U, dtype=complex)
     no, _, nv, _ = l.shape
     nmo = U.shape[0]
     mo0 = mf.mo_coeff.copy()
@@ -353,8 +384,8 @@ def kernel_rt_test(mf, t, l, U, w, f0, td, ts, RK4=True, orb=True):
         if i > 0: 
             step = ts[i] - ts[i-1]
             dt, dl = update_RK4(t, l, eris, step, RK4=RK4)
-#            X, C = compute_X(d1, d2, eris, no) # C_qp = i<[H,p+q]>
-            X, B, C = compute_X_(d1, d2, eris, 1j*dt,-1j*dl, t, l) # C_qp = i<[H,p+q]>
+            X, C = compute_X(d1, d2, eris, no) # C_qp = i<[H,p+q]>
+#            X, C = compute_X_(d1, d2, eris, 1j*dt,-1j*dl, t, l) # C_qp = i<[H,p+q]>
             t += step * dt
             l += step * dl
             LHS = (d1s[i,:,:]-d1s[i-1,:,:])/step
