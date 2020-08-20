@@ -96,20 +96,8 @@ def compute_res_l(t, l, eris):
     dl += tmp.copy()
     return dl
 
-#def update_amps(t, l, eris, X):
 def update_amps(t, l, eris):
     T, L = compute_res(t, l, eris)
-#    no, _, nv, _ = l.shape
-#
-#
-#    T += -1j * einsum('bc,acij->abij',X[no:,no:],t)
-#    T += -1j * einsum('ac,cbij->abij',X[no:,no:],t)
-#    T -= -1j * einsum('kj,abik->abij',X[:no,:no],t)
-#    T -= -1j * einsum('ki,abkj->abij',X[:no,:no],t)
-#    L += -1j * einsum('ca,ijcb->ijab',X[no:,no:],l)
-#    L += -1j * einsum('cb,ijac->ijab',X[no:,no:],l)
-#    L -= -1j * einsum('ik,kjab->ijab',X[:no,:no],l)
-#    L -= -1j * einsum('jk,ikab->ijab',X[:no,:no],l)
     return -1j*T, 1j*L
 
 def compute_res(t, l, eris):
@@ -227,95 +215,19 @@ def compute_rdms(t, l, normal=False, symm=True):
         d2 = 0.5 * (d2 + d2.transpose(2,3,0,1).conj())
     return d1, d2
 
-def compute_X_(d1, d2, eris, T, L, t, l):
-    nmo = d1.shape[0]
-    no, _, nv, _ = l.shape
-    A  = einsum('vp,qu->uvpq',np.eye(nmo),d1)
-    A -= A.transpose(1,0,3,2).conj() 
-
-    C  = einsum('vp,pu->uv',d1,eris.h)
-    C += 0.5 * einsum('pqus,vspq->uv',eris.eri,d2)
-    C -= C.T.conj()
-
-    B = np.zeros((nmo,nmo),dtype=complex)
-    B[:no,:no] += einsum('abuj,vjab->uv',T,l)
-    B[:no,:no] -= einsum('vjab,abuj->uv',L,t)
-    B[no:,no:] -= einsum('vbij,ijub->uv',T,l)
-    B[no:,no:] += einsum('ijub,vbij->uv',L,t)
-    B -= B.T.conj()
-    RHS = C - B
-
-    D = np.zeros((nmo,nmo,nmo,nmo),dtype=complex)
-    tmp = einsum('vjab,abpj->vp',l,t)
-    D[:no,:no,:no,:no] -= einsum('qu,vp->uvpq',np.eye(no),tmp)
-    tmp = einsum('ijub,qbij->qu',l,t)
-    D[no:,no:,no:,no:] -= einsum('vp,qu->uvpq',np.eye(nv),tmp)
-    D -= D.transpose(2,3,0,1)
-    D -= D.transpose(1,0,3,2).conj() 
-    LHS = A + D
-    print('LHS symm: ', np.linalg.norm(LHS+LHS.transpose(1,0,3,2).conj())) 
-    print('RHS symm: ', np.linalg.norm(RHS+RHS.T.conj()))
-
-    LHS = LHS.reshape(nmo*nmo,nmo*nmo)
-    print('LHS det: {}'.format(abs(np.linalg.det(LHS))))
-    RHS = RHS.reshape(nmo*nmo)
-    X = np.dot(np.linalg.inv(LHS),RHS)
-    X = X.reshape(nmo,nmo)
-    print('X symm: {}'.format(np.linalg.norm(X-X.T.conj())))
-    LHS = LHS.reshape(nmo,nmo,nmo,nmo)
-    RHS = RHS.reshape(nmo,nmo)
-    check = einsum('uvpq,pq->uv',LHS,X) - RHS
-    print('check inv: {}'.format(np.linalg.norm(check)))
-
-    LHSovvo = LHS[:no,no:,no:,:no].copy().reshape(no*nv,nv*no)
-    LHSvoov = LHS[no:,:no,:no,no:].copy().reshape(nv*no,no*nv)
-    LHSoooo = LHS[:no,:no,:no,:no].copy().reshape(no*no,no*no)
-    LHSvvvv = LHS[no:,no:,no:,no:].copy().reshape(nv*nv,nv*nv)
-    print('LHSovvo det: {}'.format(abs(np.linalg.det(LHSovvo))))
-    print('LHSvoov det: {}'.format(abs(np.linalg.det(LHSvoov))))
-    print('LHSoooo det: {}'.format(abs(np.linalg.det(LHSoooo))))
-    print('LHSvvvv det: {}'.format(abs(np.linalg.det(LHSvvvv))))
-    RHSov = RHS[:no,no:].copy().reshape(no*nv)
-    RHSvo = RHS[no:,:no].copy().reshape(nv*no)
-    RHSoo = RHS[:no,:no].copy().reshape(no*no)
-    RHSvv = RHS[no:,no:].copy().reshape(nv*nv)
-    
-    Xvo = np.dot(np.linalg.inv(LHSovvo),RHSov)
-    Xov = np.dot(np.linalg.inv(LHSvoov),RHSvo)
-    Xoo = np.dot(np.linalg.inv(LHSoooo),RHSoo)
-    Xvv = np.dot(np.linalg.inv(LHSvvvv),RHSvv)
-   
-    X = np.zeros((nmo,nmo),dtype=complex)
-    X[:no,no:] = Xov.reshape(no,nv).copy()
-    X[no:,:no] = Xvo.reshape(nv,no).copy()
-#    X[:no,:no] = Xoo.reshape(no,no).copy()
-#    X[no:,no:] = Xvv.reshape(nv,nv).copy()
-    print('X symm: {}'.format(np.linalg.norm(X-X.T.conj())))
-    check = einsum('uvpq,pq->uv',LHS,X) - RHS
-    print('orb eqn oo: {}, vv: {}, ov: {}, vo: {}'.format(
-           np.linalg.norm(check[:no,:no]), np.linalg.norm(check[no:,no:]), 
-           np.linalg.norm(check[:no,no:]), np.linalg.norm(check[no:,:no])))
-    exit()
-#    Xvv = scipy.linalg.solve(Avvvv,RHSvv) 
-#    Xvv, _, _, _ = scipy.linalg.lstsq(Avvvv,RHSvv) 
-#    Xoo, _, _, _ = scipy.linalg.lstsq(Aoooo,RHSoo)
-#    Xvv = 1j * Xvv.reshape(nv,nv)
-#    Xoo = 1j * Xoo.reshape(no,no)
-#    print('Xvv symm: {}'.format(np.linalg.norm(Xvv+Xvv.T.conj())))
-#    print('Xoo symm: {}'.format(np.linalg.norm(Xoo+Xoo.T.conj())))
-    return 1j*X, 1j*C.T 
-
 def compute_X(d1, d2, eris, no):
     nmo = d1.shape[0]
     nv = nmo - no
     A  = einsum('vp,qu->uvpq',np.eye(nmo),d1)
-    A -= einsum('qu,vp->uvpq',np.eye(nmo),d1)
+#    A -= einsum('qu,vp->uvpq',np.eye(nmo),d1)
+    A -= A.transpose(1,0,3,2).conj()
     Aovvo = A[:no,no:,no:,:no].copy()
 
     C  = einsum('vp,pu->uv',d1,eris.h)
-    C -= einsum('pu,vp->uv',d1,eris.h)
+#    C -= einsum('pu,vp->uv',d1,eris.h)
     C += 0.5 * einsum('pqus,vspq->uv',eris.eri,d2)
-    C -= 0.5 * einsum('vqrs,rsuq->uv',eris.eri,d2)
+#    C -= 0.5 * einsum('vqrs,rsuq->uv',eris.eri,d2)
+    C -= C.T.conj()
     Cov = C[:no,no:].copy()
 
     Aovvo = Aovvo.reshape(no*nv,nv*no)
@@ -340,144 +252,152 @@ def ao2mo(Aao, mo_coeff):
     Ab = einsum('uv,up,vq->pq',Aao,mob.conj(),mob)
     return sort1((Aa,Ab))
 
-def update_RK4(t, l, eris, step, RK4):
+def update_RK4(t, l, eris, time, step, RK4):
+    eris.full_h(time)
     dt1, dl1 = update_amps(t, l, eris)
     if not RK4:
-        return dt1, dl1 
+        return dt1, dl1
     else: 
+        eris.full_h(time+step*0.5)
         dt2, dl2 = update_amps(t + dt1*step*0.5, l + dl1*step*0.5, eris) 
         dt3, dl3 = update_amps(t + dt2*step*0.5, l + dl2*step*0.5, eris) 
+        eris.full_h(time+step)
         dt4, dl4 = update_amps(t + dt3*step, l + dl3*step, eris) 
         dt = (dt1 + 2.0*dt2 + 2.0*dt3 + dt4)/6.0
         dl = (dl1 + 2.0*dl2 + 2.0*dl3 + dl4)/6.0
         return dt, dl
 
 def kernel_rt_test(mf, t, l, U, w, f0, td, ts, RK4=True, orb=True):
-    mu_ao = mf.mol.intor('int1e_r')
-    hao = einsum('xuv,x->uv',mu_ao,f0)
-
     U = np.array(U, dtype=complex)
     t = np.array(t, dtype=complex)
     l = np.array(l, dtype=complex)
-    X = np.zeros_like(U, dtype=complex)
     no, _, nv, _ = l.shape
     nmo = U.shape[0]
     mo0 = mf.mo_coeff.copy()
     mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
-    eris = ERIs(mf)
+    eris = ERIs(mf, w, f0, td)
 
     N = len(ts)
     d1s = np.zeros((N,nmo,nmo),dtype=complex)  
     d0s = np.zeros((N,nmo,nmo),dtype=complex)  
-    tr = 0.0 
-    for i in range(N):
+
+    d1, d2 = compute_rdms(t, l)
+    d1s[0,:,:] = d1.copy()
+    d0s[0,:,:] = einsum('qp,vq,up->vu',d1,U,U.conj()) # in stationary HF basis
+    tr = abs(np.trace(d1)-no)
+    for i in range(1,N):
         time = ts[i]
+        step = ts[i] - ts[i-1]
         eris.ao2mo(mo_coeff)
-        if time < td:
-            evlp = math.sin(math.pi*time/td)**2
-            osc = math.sin(w*time) 
-            eris.h += ao2mo(hao, mo_coeff) * osc * evlp
+        dt, dl = update_RK4(t, l, eris, time, step, RK4)
         d1, d2 = compute_rdms(t, l)
+        eris.full_h(time)
+        X, C = compute_X(d1, d2, eris, no) # C_qp = i<[H,p+q]>
+        # computing observables
         d1s[i,:,:] = d1.copy()
         d0s[i,:,:] = einsum('qp,vq,up->vu',d1,U,U.conj()) # in stationary HF basis
-        tr += abs(np.trace(d1)-no)
-        if i > 0: 
-            step = ts[i] - ts[i-1]
-            dt, dl = update_RK4(t, l, eris, step, RK4=RK4)
-            X, C = compute_X(d1, d2, eris, no) # C_qp = i<[H,p+q]>
-#            X, C = compute_X_(d1, d2, eris, 1j*dt,-1j*dl, t, l) # C_qp = i<[H,p+q]>
-            t += step * dt
-            l += step * dl
-            LHS = (d1s[i,:,:]-d1s[i-1,:,:])/step
-            LHS0 = (d0s[i,:,:]-d0s[i-1,:,:])/step
-            C0 = einsum('qp,vq,up->vu',C,U,U.conj()) # in stationary HF basis
-            tmp  = einsum('rp,qr->qp',X,d1)
-            tmp -= einsum('qr,rp->qp',X,d1)
-            RHS = C + tmp
-            error = LHS-RHS
+        LHS = (d1s[i,:,:]-d1s[i-1,:,:])/step
+        LHS0 = (d0s[i,:,:]-d0s[i-1,:,:])/step
+        C0 = einsum('qp,vq,up->vu',C,U,U.conj()) # in stationary HF basis
+        tmp  = einsum('rp,qr->qp',X,d1)
+        tmp -= einsum('qr,rp->qp',X,d1)
+        RHS = C + tmp
+        error = LHS-RHS
 #
-            LHS_  = einsum('vu,up,vq->qp',LHS0,U,U.conj())
-            dU = np.dot(U, X)
-            tmp_  = einsum('vu,up,vq->qp',d0s[i,:,:],dU,U.conj())
-            tmp_ += einsum('vu,up,vq->qp',d0s[i,:,:],U,dU.conj())
-            LHS_ += tmp_.copy()
-            diff = LHS - LHS_
+        LHS_  = einsum('vu,up,vq->qp',LHS0,U,U.conj())
+        dU = np.dot(U, X)
+        tmp_  = einsum('vu,up,vq->qp',d0s[i,:,:],dU,U.conj())
+        tmp_ += einsum('vu,up,vq->qp',d0s[i,:,:],U,dU.conj())
+        LHS_ += tmp_.copy()
+        diff = LHS - LHS_
 #
-            X = X.copy() if orb else np.zeros_like(X, dtype=complex)
-            U = np.dot(U, scipy.linalg.expm(step*X))
-            mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
-            print('time: {:.4f}, err oo: {}, vv: {}, ov: {}, vo: {}, diff oo: {}, vv: {}, ov: {}, vo: {}, err0: {}, X: {}'.format(time,
-                   np.linalg.norm(error[:no,:no]), np.linalg.norm(error[no:,no:]), 
-                   np.linalg.norm(RHS[:no,no:]), np.linalg.norm(RHS[no:,:no]),
-                   np.linalg.norm(diff[:no,:no]), np.linalg.norm(diff[no:,no:]), 
-                   np.linalg.norm(diff[:no,no:]), np.linalg.norm(diff[no:,:no]),
-                   np.linalg.norm(LHS0-C0), np.linalg.norm(X)))
-            if np.linalg.norm(error) > 1.0:
-                print('diverging error!')
-                break
+        print('time: {:.4f}, err oo: {}, vv: {}, ov: {}, vo: {}, diff oo: {}, vv: {}, ov: {}, vo: {}, err0: {}, X: {}'.format(time,
+              np.linalg.norm(error[:no,:no]), np.linalg.norm(error[no:,no:]), 
+              np.linalg.norm(RHS[:no,no:]), np.linalg.norm(RHS[no:,:no]),
+              np.linalg.norm(diff[:no,:no]), np.linalg.norm(diff[no:,no:]), 
+              np.linalg.norm(diff[:no,no:]), np.linalg.norm(diff[no:,:no]),
+              np.linalg.norm(LHS0-C0), np.linalg.norm(X)))
+        if np.linalg.norm(error) > 1.0:
+            print('diverging error!')
+            break
+        t += step * dt
+        l += step * dl
+        X = X.copy() if orb else np.zeros_like(X, dtype=complex)
+        U = np.dot(U, scipy.linalg.expm(step*X))
+        mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
     print('check trace: {}'.format(tr))
 
 def kernel_rt(mf, t, l, U, w, f0, td, ts, RK4=True):
-    mu_ao = mf.mol.intor('int1e_r')
-    hao = einsum('xuv,x->uv',mu_ao,f0)
-
     U = np.array(U, dtype=complex)
     t = np.array(t, dtype=complex)
     l = np.array(l, dtype=complex)
     no, _, nv, _ = l.shape
     mo0 = mf.mo_coeff.copy()
     mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
-    eris = ERIs(mf)
+    eris = ERIs(mf, w, f0, td)
 
     N = len(ts)
     mus = np.zeros((N,3),dtype=complex)  
-    Hmus = np.zeros((N,3),dtype=complex)  
+    Hmu = np.zeros((N,3),dtype=complex)  
     Es = np.zeros(N,dtype=complex)
 
-    for i in range(N):
+    d1, d2 = compute_rdms(t, l)
+    mux = ao2mo(eris.mu_ao[0,:,:], mo_coeff)
+    muy = ao2mo(eris.mu_ao[1,:,:], mo_coeff)
+    muz = ao2mo(eris.mu_ao[2,:,:], mo_coeff)
+    mus[0,0] = einsum('pq,qp',mux,d1)
+    mus[0,1] = einsum('pq,qp',muy,d1)
+    mus[0,2] = einsum('pq,qp',muz,d1)
+    eris.ao2mo(mo_coeff)
+    eris.full_h(time=0.0)
+    Es[0]  = einsum('pq,qp',eris.h,d1) 
+    Es[0] += 0.25 * einsum('pqrs,rspq',eris.eri,d2)
+    for i in range(1,N):
         time = ts[i]
+        step = ts[i] - ts[i-1]
         eris.ao2mo(mo_coeff)
-        if time < td:
-            evlp = math.sin(math.pi*time/td)**2
-            osc = math.sin(w*time) 
-            eris.h += ao2mo(hao, mo_coeff) * evlp * osc
-        mux = ao2mo(mu_ao[0,:,:], mo_coeff)
-        muy = ao2mo(mu_ao[1,:,:], mo_coeff)
-        muz = ao2mo(mu_ao[2,:,:], mo_coeff)
+        dt, dl = update_RK4(t, l, eris, time, step, RK4)
         d1, d2 = compute_rdms(t, l)
+        eris.full_h(time)
+        X, C = compute_X(d1, d2, eris, no) # C_qp = i<[H,p+q]>
+        # computing observables
+        mux = ao2mo(eris.mu_ao[0,:,:], mo_coeff)
+        muy = ao2mo(eris.mu_ao[1,:,:], mo_coeff)
+        muz = ao2mo(eris.mu_ao[2,:,:], mo_coeff)
         mus[i,0] = einsum('pq,qp',mux,d1)
         mus[i,1] = einsum('pq,qp',muy,d1)
         mus[i,2] = einsum('pq,qp',muz,d1)
+        Hmu[i,0] = einsum('pq,qp',mux,C)
+        Hmu[i,1] = einsum('pq,qp',muy,C)
+        Hmu[i,2] = einsum('pq,qp',muz,C)
         Es[i]  = einsum('pq,qp',eris.h,d1) 
         Es[i] += 0.25 * einsum('pqrs,rspq',eris.eri,d2)
-        if i > 0:
-            step = ts[i] - ts[i-1]
-            dt, dl = update_RK4(t, l, eris, step, RK4=RK4)
-            X, C = compute_X(d1, d2, eris, no) # C_qp = i<[H,p+q]>
-            t += step * dt
-            l += step * dl
-            Hmus[i,0] = einsum('pq,qp',mux,C)
-            Hmus[i,1] = einsum('pq,qp',muy,C)
-            Hmus[i,2] = einsum('pq,qp',muz,C)
-            U = np.dot(U, scipy.linalg.expm(step*X))
-            mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
-            error = (mus[i,:]-mus[i-1,:])/step - Hmus[i] 
-            print('time: {:.4f}, ehrenfest: {}, imag: {}, E.imag: {}'.format(time,
-                  np.linalg.norm(error), np.linalg.norm(mus[i,:].imag), Es[i].imag))
+        error = (mus[i,:]-mus[i-1,:])/step - Hmu[i] 
+        print('time: {:.4f}, ehrenfest: {}, imag: {}, E.imag: {}'.format(time,
+              np.linalg.norm(error), np.linalg.norm(mus[i,:].imag), Es[i].imag))
+        t += step * dt
+        l += step * dl
+        U = np.dot(U, scipy.linalg.expm(step*X))
+        mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
     return mus, Es
 
 class ERIs:
-    def __init__(self, mf):
+    def __init__(self, mf, w=0.0, f0=np.zeros(3), td=0.0):
         self.hao = mf.get_hcore()
         self.eri_ao = mf.mol.intor('int2e_sph')
+        self.mu_ao = mf.mol.intor('int1e_r')
+        self.h1ao = einsum('xuv,x->uv',self.mu_ao,f0)
+#        self.mo0 = mf.mo_coeff
+
+        self.w = w
+        self.f0 = f0
+        self.td = td
 
     def ao2mo(self, mo_coeff):
-        moa, mob = mo_coeff
-        nmoa, nmob = moa.shape[0], mob.shape[0]
+        moa, mob = mo_coeff 
     
-        ha = einsum('uv,up,vq->pq',self.hao,moa.conj(),moa)
-        hb = einsum('uv,up,vq->pq',self.hao,mob.conj(),mob)
-        self.h = sort1((ha,hb))
+        self.h0 = ao2mo(self.hao, mo_coeff)
+        self.h1 = ao2mo(self.h1ao, mo_coeff)
     
         eri_aa = einsum('uvxy,up,vr->prxy',self.eri_ao,moa.conj(),moa)
         eri_aa = einsum('prxy,xq,ys->prqs',eri_aa,     moa.conj(),moa)
@@ -490,3 +410,11 @@ class ERIs:
         eri_ab = eri_ab.transpose(0,2,1,3)
         eri = sort2((eri_aa, eri_ab, eri_bb), anti=False)
         self.eri = eri - eri.transpose(0,1,3,2)
+
+    def full_h(self, time=0.0):
+        self.h = self.h0.copy()
+        if time < self.td:
+            evlp = math.sin(math.pi*time/self.td)**2
+            osc = math.sin(self.w*time)
+            self.h += self.h1 * evlp * osc
+            
