@@ -87,7 +87,7 @@ def kernel_rt_test(mf, c, w, f0, td, ts, RK4=True):
         eris.full_h(time)
         RHS = c.compute_RHS(d1, d2, eris)
         error = np.linalg.norm(LHS[0]-RHS[0]), np.linalg.norm(LHS[1]-RHS[1])
-        tr += abs(np.trace(d1as[i,:,:])-eris.nelec[0])
+        tr  = abs(np.trace(d1as[i,:,:])-eris.nelec[0])
         tr += abs(np.trace(d1bs[i,:,:])-eris.nelec[1])
         E[i] = compute_energy(d1, d2, eris)
         print('time: {:.4f}, ee(mH): {}, d1a: {}, d1b: {}, tr: {}'.format(
@@ -214,6 +214,8 @@ class CI():
 #        check += np.linalg.norm(d2bb+d2bb.transpose(0,1,3,2))
 #        check += np.linalg.norm(d2bb+d2bb.transpose(1,0,2,3))
 #        print('check symm: {}'.format(check))
+#        print('has imaginary: {}'.format(np.linalg.norm(d1a.imag)))
+#        print('real part: {}'.format(np.linalg.norm(d1a.real)))
         return (d1a, d1b), (d2aa, d2ab, d2bb)
 
     def update_ci(self, real, imag, eris):
