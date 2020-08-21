@@ -1,5 +1,7 @@
 import numpy as np
-from pyscf import lib
+import math
+from pyscf import lib, fci
+from pyscf.fci import cistring
 einsum = lib.einsum
 
 def compute_energy_(f0, eri, d, l): # plain eri in physicists notation
@@ -193,46 +195,47 @@ def propagate2(t2, d, maxiter=100, thresh=1e-8):
     return l
 
 def compute_ci(t1, t2, nfc, nfv):
-        noa, nob, nva, nvb = t2[1].shape
-        nmo = noa + nva + nfc[0] + nfv[0], nob + nvb + nfc[1] + nfv[1]
-        Na = num_strings(nmoa,nea)
-        Nb = num_strings(nmob,neb)
-        ci = np.zeros((Na,Nb))
-        ci[0,0] = 1.0
+    noa, nob, nva, nvb = t2[1].shape
+    ne = noa + nfc[0], nob + nfc[1]
+    nmo = ne[0] + nva + nfv[0], ne[1] + nvb + nfv[1]
+    Na = cistring.num_strings(nmo[0],ne[0])
+    Nb = cistring.num_strings(nmo[0],ne[1])
+    ci = np.zeros((Na,Nb))
+    ci[0,0] = 1.0
     
-        Sa, Taa = ci_imt(nmo[0],nfc[0],t1[0],t2[0])
-        Sb, Tbb = ci_imt(nmo[1],nfc[1],t1[1],t2[2])
-        temp = einsum('KIia,ijab->KIjb',Sa,t2[1]) 
-        def T(c):
-            c_  = np.dot(Taa,c)
-            c_ += np.dot(Tbb,c.T).T
-            c_ += einsum('KIjb,LJjb,IJ->KL',temp,Sb,c)
-            return c_
-        out = ci.copy() 
-        for n in range(1, nea+neb+1):
-            ci = T(ci)
-            out += ci/math.factorial(n)
-        return out/np.linalg.norm(ci)
+    Sa, Taa = ci_imt(nmo[0],nfc[0],t1[0],t2[0])
+    Sb, Tbb = ci_imt(nmo[1],nfc[1],t1[1],t2[2])
+    temp = einsum('KIia,ijab->KIjb',Sa,t2[1]) 
+    def T(c):
+        c_  = np.dot(Taa,c)
+        c_ += np.dot(Tbb,c.T).T
+        c_ += einsum('KIjb,LJjb,IJ->KL',temp,Sb,c)
+        return c_
+    out = ci.copy() 
+    for n in range(1, sum(ne)+1):
+        ci = T(ci)
+        out += ci/math.factorial(n)
+    return out/np.linalg.norm(out)
 
 def ci_imt(nmo,nfc,t1,t2):
     no, nv = t1.shape
     ne = no + nfc
-    N = num_strings(nmo,ne)
+    N = cistring.num_strings(nmo,ne)
     S = np.zeros((N, N, no, nv))
     T = np.zeros((N, N))
     for I in range(N): 
-        strI = addr2str(nmo,ne,I) 
+        strI = cistring.addr2str(nmo,ne,I) 
         for i in range(no):
             des1 = i+nfc
             h1 = 1 << des1
             if strI & h1 != 0:
                 for a in range(nv):
-                    cre1 = a
+                    cre1 = a + ne
                     p1 = 1 << cre1
                     if strI & p1 == 0:
                         str1 = strI ^ h1 | p1
-                        K = str2addr(nmo,ne,str1)
-                        sgn1 = cre_des_sign(cre1,des1,strI)
+                        K = cistring.str2addr(nmo,ne,str1)
+                        sgn1 = cistring.cre_des_sign(cre1,des1,strI)
                         S[K,I,i,a] += sgn1
                         T[K,I] += t1[i,a]*sgn1
                         for j in range(i):
@@ -240,11 +243,11 @@ def ci_imt(nmo,nfc,t1,t2):
                             h2 = 1 << des2
                             if strI & h2 != 0:
                                 for b in range(a):
-                                    cre2 = b
+                                    cre2 = b + ne
                                     p2 = 1 << cre2
                                     if strI & p2 == 0:
                                         str2 = str1 ^ h2 | p2
-                                        K = str2addr(nmo,ne,str2)
-                                        sgn2 = cre_des_sign(cre2,des2,str1)
+                                        K = cistring.str2addr(nmo,ne,str2)
+                                        sgn2 = cistring.cre_des_sign(cre2,des2,str1)
                                         T[K,I] += t2[i,j,a,b]*sgn1*sgn2
     return S, T 
