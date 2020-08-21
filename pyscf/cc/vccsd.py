@@ -2,11 +2,17 @@ import numpy as np
 from pyscf import lib
 einsum = lib.einsum
 
-def compute_energy(f0, eri, d, l): # eri in physicists notation
+def compute_energy_(f0, eri, d, l): # plain eri in physicists notation
     e  = einsum('pr,rp',f0,d)
     e += 0.5 * einsum('pqrs,rp,sq',eri,d,d)
     e -= 0.5 * einsum('pqsr,rp,sq',eri,d,d)
     e += 0.5 * einsum('pqrs,rspq',eri,l)
+    return e
+
+def compute_energy(f0, eri, d, l): # anti-symm eri in physicists notation
+    e  = einsum('pr,rp',f0,d)
+    e += 0.5 * einsum('pqrs,rp,sq',eri,d,d)
+    e += 0.25 * einsum('pqrs,rspq',eri,l)
     return e
 
 def energy(f0, eri, t1, t2):
@@ -38,8 +44,8 @@ def sort2(tup, anti):
         out[1::2, ::2, ::2,1::2] = - ab.transpose(1,0,2,3).copy()
     return out
 
-def compute_irred(t1, t2, order):
-    no, _, nv, _ = t2.shape
+def compute_irred_(t1, t2, order):
+    no, nv = t1.shape
     bvv = np.zeros((nv,)*2)
     boo = np.zeros((no,)*2)
     aov = t1.copy()
@@ -83,6 +89,50 @@ def compute_irred(t1, t2, order):
         boo -= einsum('ekmc,jkbc,imbe->ij',voov,t2,t2)
         boo -= 0.25 * einsum('abcd,mjab,micd->ij',vvvv,t2,t2)
 
+    return aov, boo, bvv 
+
+def compute_irred(t1, t2, order):
+    no, nv = t1.shape
+    bvv = np.zeros((nv,)*2)
+    boo = np.zeros((no,)*2)
+    aov = t1.copy()
+
+    if order >= 2:
+        fvv =   0.5 * einsum('klad,klbd->ab',t2,t2)
+        foo = - 0.5 * einsum('kicd,kjcd->ij',t2,t2)
+
+        aov += einsum('ijab,jb->ia',t2,t1)
+        bvv += fvv.copy()
+        boo += foo.copy()
+
+    if order >= 3:
+        voov = einsum('ilae,jlbe->ajib',t2,t2)
+        aov += einsum('ajib,jb->ia',voov,t1)
+
+    if order >= 4:
+        Fvv = fvv + einsum('ia,ib->ab',t1,t1)
+        Foo = foo - einsum('ia,ja->ij',t1,t1)
+        vvvv = 0.5 * einsum('klab,klcd->abcd',t2,t2)
+        oooo = 0.5 * einsum('ijcd,klcd->ijkl',t2,t2)
+        Roovv = einsum('ajib,jkbc->ikac',voov,t2)
+        Loovv = 0.5 * einsum('ijkl,klab->ijab',oooo,t2) 
+        Toovv = Roovv + 0.5 * Loovv 
+
+        tmp  = 0.0
+        tmp -= einsum('jc,bc->bj',t1,Fvv)
+        tmp += einsum('kb,jk->bj',t1,foo)
+        aov += einsum('ijab,bj->ia',t2,tmp)
+        aov += einsum('ikac,kc->ia',Roovv,t1)
+        aov -= einsum('kiac,kc->ia',Roovv,t1)
+        aov += einsum('ijab,jb->ia',Loovv,t1)
+
+        bvv += einsum('ij,ajib->ab',Foo,voov)
+        bvv -= einsum('fe,aebf->ab',Fvv,vvvv)
+        bvv += einsum('imae,imbe->ab',Toovv,t2)
+
+        boo += einsum('ab,ajib->ij',Fvv,voov)
+        boo -= einsum('ml,iljm->ij',Foo,oooo)
+        boo -= einsum('jmbe,imbe->ij',Toovv,t2)
     return aov, boo, bvv 
 
 def propagate1(aov, boo, bvv):
@@ -142,3 +192,59 @@ def propagate2(t2, d, maxiter=100, thresh=1e-8):
     l = einsum('uvrs,up,vq->pqrs',l,g,g) 
     return l
 
+def compute_ci(t1, t2, nfc, nfv):
+        noa, nob, nva, nvb = t2[1].shape
+        nmo = noa + nva + nfc[0] + nfv[0], nob + nvb + nfc[1] + nfv[1]
+        Na = num_strings(nmoa,nea)
+        Nb = num_strings(nmob,neb)
+        ci = np.zeros((Na,Nb))
+        ci[0,0] = 1.0
+    
+        Sa, Taa = ci_imt(nmo[0],nfc[0],t1[0],t2[0])
+        Sb, Tbb = ci_imt(nmo[1],nfc[1],t1[1],t2[2])
+        temp = einsum('KIia,ijab->KIjb',Sa,t2[1]) 
+        def T(c):
+            c_  = np.dot(Taa,c)
+            c_ += np.dot(Tbb,c.T).T
+            c_ += einsum('KIjb,LJjb,IJ->KL',temp,Sb,c)
+            return c_
+        out = ci.copy() 
+        for n in range(1, nea+neb+1):
+            ci = T(ci)
+            out += ci/math.factorial(n)
+        return out/np.linalg.norm(ci)
+
+def ci_imt(nmo,nfc,t1,t2):
+    no, nv = t1.shape
+    ne = no + nfc
+    N = num_strings(nmo,ne)
+    S = np.zeros((N, N, no, nv))
+    T = np.zeros((N, N))
+    for I in range(N): 
+        strI = addr2str(nmo,ne,I) 
+        for i in range(no):
+            des1 = i+nfc
+            h1 = 1 << des1
+            if strI & h1 != 0:
+                for a in range(nv):
+                    cre1 = a
+                    p1 = 1 << cre1
+                    if strI & p1 == 0:
+                        str1 = strI ^ h1 | p1
+                        K = str2addr(nmo,ne,str1)
+                        sgn1 = cre_des_sign(cre1,des1,strI)
+                        S[K,I,i,a] += sgn1
+                        T[K,I] += t1[i,a]*sgn1
+                        for j in range(i):
+                            des2 = j+nfc
+                            h2 = 1 << des2
+                            if strI & h2 != 0:
+                                for b in range(a):
+                                    cre2 = b
+                                    p2 = 1 << cre2
+                                    if strI & p2 == 0:
+                                        str2 = str1 ^ h2 | p2
+                                        K = str2addr(nmo,ne,str2)
+                                        sgn2 = cre_des_sign(cre2,des2,str1)
+                                        T[K,I] += t2[i,j,a,b]*sgn1*sgn2
+    return S, T 
