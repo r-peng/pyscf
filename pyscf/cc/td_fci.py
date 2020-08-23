@@ -10,14 +10,14 @@ def update_ci(c, eris):
     def _hop(c):
         return direct_spin1.contract_2e(h2e, c, eris.nao, eris.nelec)
     Hc = _hop(c)
-    Hc -= eris.E0
+    Hc -= eris.E0 * c
     return - Hc
 
-def update_RK4(c, eris, step, RK4=True):
+def update_RK(c, eris, step, RK=4):
     dc1 = update_ci(c, eris)
-    if not RK4:
+    if RK == 1:
         return dc1
-    else: 
+    if RK == 4: 
         dc2 = update_ci(c+dc1*step*0.5, eris)
         dc3 = update_ci(c+dc2*step*0.5, eris)
         dc4 = update_ci(c+dc3*step    , eris)
@@ -52,7 +52,7 @@ def compute_trace(d1, d2, eris):
     tr2 = np.linalg.norm(d2_-d1[0]-d1[1])
     return tr1, tr2
 
-def kernel_it(mf, step=0.01, maxiter=1000, thresh=1e-6, RK4=True):
+def kernel_it(mf, step=0.01, maxiter=1000, thresh=1e-6, RK=4):
     eris = ERIs(mf)
     eris.full_h() 
 
@@ -61,7 +61,7 @@ def kernel_it(mf, step=0.01, maxiter=1000, thresh=1e-6, RK4=True):
     c[0,0] = 1.0
     E_old = mf.energy_elec()[0]
     for i in range(maxiter):
-        dc = update_RK4(c, eris, step, RK4=RK4)
+        dc = update_RK(c, eris, step, RK=RK)
         c += step * dc
         c /= np.linalg.norm(c)
         d1, d2 = compute_rdm(c, eris.nao, eris.nelec)
@@ -73,7 +73,7 @@ def kernel_it(mf, step=0.01, maxiter=1000, thresh=1e-6, RK4=True):
             break
     return c, E
 
-def kernel_rt_test(mf, c, w, f0, td, ts, RK4=True):
+def kernel_rt_test(mf, c, w, f0, td, ts, RK=4):
     eris = ERIs(mf, w=w, f0=f0, td=td)
     eris.full_h()
     c = CI(c)
@@ -91,7 +91,7 @@ def kernel_rt_test(mf, c, w, f0, td, ts, RK4=True):
     for i in range(1,N):
         time = ts[i]
         step = ts[i] - ts[i-1]
-        dr, di = c.update_RK4(c.real, c.imag, eris, time, step, RK4=RK4)
+        dr, di = c.update_RK(c.real, c.imag, eris, time, step, RK=RK)
         # computing observables
         d1, d2 = c.compute_rdm(eris.nao, eris.nelec, compute_d2=True)
         d1as[i,:,:], d1bs[i,:,:] = d1[0].copy(), d1[1].copy()
@@ -112,7 +112,7 @@ def kernel_rt_test(mf, c, w, f0, td, ts, RK4=True):
         c.real /= norm 
         c.imag /= norm
 
-def kernel_rt(mf, c, w, f0, td, ts, RK4=True):
+def kernel_rt(mf, c, w, f0, td, ts, RK=4):
     eris = ERIs(mf, w=w, f0=f0, td=td)
     eris.full_h()
     c = CI(c)
@@ -123,16 +123,16 @@ def kernel_rt(mf, c, w, f0, td, ts, RK4=True):
     E = np.zeros(N,dtype=complex)
 
     d1, d2 = c.compute_rdm(eris.nao, eris.nelec, compute_d2=True)
-    mus[0,:], _ = compute_dipole(eris, d1, d2=None, time=None) 
+    mus[0,:], _ = electric_dipole(eris, d1, d2=None, time=None) 
     E[0] = compute_energy(d1, d2, eris, time=None)
     print('FCI energy check : {}'.format(E[0]+mf.energy_nuc()))
     for i in range(1,N):
         time = ts[i]
         step = ts[i] - ts[i-1]
-        dr, di = c.update_RK4(c.real, c.imag, eris, time, step, RK4=RK4)
+        dr, di = c.update_RK(c.real, c.imag, eris, time, step, RK=RK)
         # computing observables
         d1, d2 = c.compute_rdm(eris.nao, eris.nelec, compute_d2=True)
-        mus[i,:], Hmu[i,:] = compute_dipole(eris, d1, d2, time) 
+        mus[i,:], Hmu[i,:] = electric_dipole(eris, d1, d2, time) 
         err = (mus[i,:]-mus[i-1,:])/step - Hmu[i,:]
         E[i] = compute_energy(d1, d2, eris, time=None)
         print('time: {:.4f}, E(mH): {}, err: {}, mu.imag: {}, E.imag: {}'.format(
@@ -143,13 +143,12 @@ def kernel_rt(mf, c, w, f0, td, ts, RK4=True):
         norm = np.linalg.norm(c.real+1j*c.imag)
         c.real /= norm 
         c.imag /= norm
-    return mus.real, (E - E[0]).real
+    return mus.real-eris.nucl_dip, (E - E[0]).real
 
 class ERIs():
     def __init__(self, mf, w=None, f0=None, td=None):
         hao = mf.get_hcore()
         eri_ao = mf.mol.intor('int2e_sph')
-        self.E0 = 0.0
         self.nao = mf.mol.nao_nr()
         self.nelec = mf.mol.nelec
 
@@ -157,11 +156,19 @@ class ERIs():
         eri = einsum('uvxy,up,vr->prxy',eri_ao,mf.mo_coeff.conj(),mf.mo_coeff)
         self.eri = einsum('prxy,xq,ys->prqs',eri,mf.mo_coeff.conj(),mf.mo_coeff)
 
-        if td is not None: 
+        # the number component, 
+        # for the time-indepedent case, it's the reference energy
+        # for time-dependent case, it's the nuclear component of dipole
+        self.E0 = mf.energy_elec()[0] 
+        if td is not None:
             mu_ao = mf.mol.intor('int1e_r')
             h1ao = einsum('xuv,x->uv',mu_ao,f0)
             self.h1 = einsum('uv,up,vq->pq',h1ao,mf.mo_coeff.conj(),mf.mo_coeff)
             self.mu = einsum('xuv,up,vq->xpq',mu_ao,mf.mo_coeff.conj(),mf.mo_coeff)
+            charges = mf.mol.atom_charges()
+            coords  = mf.mol.atom_coords()
+            self.nucl_dip = einsum('i,ix->x', charges, coords)
+            self.E0 = np.dot(self.nucl_dip,f0)
             self.w = w
             self.f0 = f0
             self.td = td
@@ -170,9 +177,7 @@ class ERIs():
         self.h = self.h0.copy()
         if time is not None: 
             if time < self.td:
-                #print('td')
                 evlp = math.sin(math.pi*time/self.td)**2
-                #osc = math.sin(self.w*time)
                 osc = math.cos(self.w*(time-self.td*0.5))
                 self.h += self.h1 * evlp * osc
 
@@ -210,12 +215,16 @@ class CI():
         di = update_ci(real, eris)
         return dr, di
 
-    def update_RK4(self, r, i, eris, time, step, RK4=True):
+    def update_RK(self, r, i, eris, time, step, RK=4):
         eris.full_h(time)
         dr1, di1 = self.update_ci(r, i, eris)
-        if not RK4:
+        if RK == 1:
             return dr1, di1
-        else: 
+        if RK == 2:
+            eris.full_h(time+step*0.5)
+            dr2, di2 = self.update_ci(r+dr1*step*0.5, i+di1*step*0.5, eris) 
+            return dr2, di2 
+        if RK == 4: 
             eris.full_h(time+step*0.5)
             dr2, di2 = self.update_ci(r+dr1*step*0.5, i+di1*step*0.5, eris) 
             dr3, di3 = self.update_ci(r+dr2*step*0.5, i+di2*step*0.5, eris)
@@ -239,7 +248,7 @@ def compute_RHS(d1, d2, eris, time=None):
                      eri_aa, eri_ab.transpose(1,0,3,2))
     return 1j*Ca.T, 1j*Cb.T
 
-def compute_dipole(eris, d1, d2=None, time=None):
+def electric_dipole(eris, d1, d2=None, time=None):
     mu  = einsum('xpq,qp->x',eris.mu,d1[0])
     mu += einsum('xpq,qp->x',eris.mu,d1[1])
     Hmu = None
