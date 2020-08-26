@@ -96,11 +96,9 @@ def compute_res_l(t, l, eris):
     dl += tmp.copy()
     return dl
 
-def update_amps(t, l, eris):
-    T, L = compute_res(t, l, eris)
-    return -1j*T, 1j*L
+def update_amps(t, l, eris, time=None):
+    eris.full_h(time)
 
-def compute_res(t, l, eris):
     no = t.shape[3]
     eri = eris.eri.copy()
     f  = eris.h.copy()
@@ -152,7 +150,10 @@ def compute_res(t, l, eris):
     tmp += tmp.transpose(1,0,3,2)
     tmp -= tmp.transpose(0,1,3,2)
     dl += tmp.copy()
-    return dt, dl
+
+    eri = f = None
+    vvvv = oooo = ovvo = tmp = None
+    return -1j*dt, 1j*dl
 
 def compute_gamma1(t, l): # normal ordered, asymmetric
     dvv = 0.5 * einsum('ikac,bcik->ba',l,t)
@@ -210,23 +211,24 @@ def compute_rdms(t, l, normal=False, symm=True):
     d2[no:,:no,no:,:no] = - dovvo.transpose(1,0,2,3)
     d2[no:,no:,no:,no:] = dvvvv.copy()
 
+    doo = dvv = doooo = doovv = dvvoo = dovvo = dovov = dvvvv = None
     if symm:
         d1 = 0.5 * (d1 + d1.T.conj())
         d2 = 0.5 * (d2 + d2.transpose(2,3,0,1).conj())
     return d1, d2
 
-def compute_X(d1, d2, eris, no):
+def compute_X(d1, d2, eris, time, no):
+    eris.full_h(time)
+
     nmo = d1.shape[0]
     nv = nmo - no
     A  = einsum('vp,qu->uvpq',np.eye(nmo),d1)
-#    A -= einsum('qu,vp->uvpq',np.eye(nmo),d1)
     A -= A.transpose(1,0,3,2).conj()
     Aovvo = A[:no,no:,no:,:no].copy()
+    A = None
 
     C  = einsum('vp,pu->uv',d1,eris.h)
-#    C -= einsum('pu,vp->uv',d1,eris.h)
     C += 0.5 * einsum('pqus,vspq->uv',eris.eri,d2)
-#    C -= 0.5 * einsum('vqrs,rsuq->uv',eris.eri,d2)
     C -= C.T.conj()
     Cov = C[:no,no:].copy()
 
@@ -247,27 +249,96 @@ def compute_energy(d1, d2, eris):
     return e.real
 
 def ao2mo(Aao, mo_coeff):
-    moa, mob = mo_coeff
-    Aa = einsum('uv,up,vq->pq',Aao,moa.conj(),moa)
-    Ab = einsum('uv,up,vq->pq',Aao,mob.conj(),mob)
+    Aa = einsum('uv,up,vq->pq',Aao,mo_coeff[0].conj(),mo_coeff[0])
+    Ab = einsum('uv,up,vq->pq',Aao,mo_coeff[1].conj(),mo_coeff[1])
     return sort1((Aa,Ab))
 
-def update_RK4(t, l, eris, time, step, RK4):
-    eris.full_h(time)
-    dt1, dl1 = update_amps(t, l, eris)
-    if not RK4:
+def update_RK_(t, l, eris, time, h, RK):
+    dt1, dl1 = update_amps(t, l, eris, time)
+    if RK == 1:
         return dt1, dl1
-    else: 
-        eris.full_h(time+step*0.5)
-        dt2, dl2 = update_amps(t + dt1*step*0.5, l + dl1*step*0.5, eris) 
-        dt3, dl3 = update_amps(t + dt2*step*0.5, l + dl2*step*0.5, eris) 
-        eris.full_h(time+step)
-        dt4, dl4 = update_amps(t + dt3*step, l + dl3*step, eris) 
+    if RK == 2:
+        dt2, dl2 = update_amps(t + dt1*h*0.5, l + dl1*h*0.5, eris, time+h*0.5) 
+        return dt2, dl2
+    if RK == 4: 
+        dt2, dl2 = update_amps(t + dt1*h*0.5, l + dl1*h*0.5, eris, time+h*0.5) 
+        dt3, dl3 = update_amps(t + dt2*h*0.5, l + dl2*h*0.5, eris, time+h*0.5) 
+        dt4, dl4 = update_amps(t + dt3*h, l + dl3*h, eris, time+h) 
         dt = (dt1 + 2.0*dt2 + 2.0*dt3 + dt4)/6.0
         dl = (dl1 + 2.0*dl2 + 2.0*dl3 + dl4)/6.0
+        dt1 = dt2 = dt3 = dt4 = dl1 = dl2 = dl3 = dl4 = None
         return dt, dl
 
-def kernel_rt_test(mf, t, l, U, w, f0, td, ts, RK4=True, orb=True):
+def update_RK(t, l, eris, time, h, RK):
+    no = l.shape[0]
+    dt1, dl1 = update_amps(t, l, eris, time)
+    d1_, d2_ = compute_rdms(t, l)
+    X1, C = compute_X(d1_, d2_, eris, time, no) # C_qp = i<[H,p+q]>
+    if RK == 1:
+        return dt1, dl1, X1, X1, C, d1_, d2_
+    if RK == 2:
+        dt2, dl2 = update_amps(t + dt1*h*0.5, l + dl1*h*0.5, eris, time+h*0.5) 
+        d1, d2 =  compute_rdms(t + dt1*h*0.5, l + dl1*h*0.5)
+        X2, _ = compute_X(d1, d2, eris, time+h*0.5, no) # C_qp = i<[H,p+q]>
+        return dt2, dl2, X2, X1, C, d1_, d2_
+    if RK == 4: 
+        dt2, dl2 = update_amps(t + dt1*h*0.5, l + dl1*h*0.5, eris, time+h*0.5) 
+        d1, d2 =  compute_rdms(t + dt1*h*0.5, l + dl1*h*0.5)
+        X2, _ = compute_X(d1, d2, eris, time+h*0.5, no) # C_qp = i<[H,p+q]>
+        dt3, dl3 = update_amps(t + dt2*h*0.5, l + dl2*h*0.5, eris, time+h*0.5) 
+        d1, d2 =  compute_rdms(t + dt2*h*0.5, l + dl2*h*0.5)
+        X3, _ = compute_X(d1, d2, eris, time+h*0.5, no) # C_qp = i<[H,p+q]>
+        dt4, dl4 = update_amps(t + dt3*h, l + dl3*h, eris, time+h) 
+        d1, d2 =  compute_rdms(t + dt3*h, l + dl3*h)
+        X4, _ = compute_X(d1, d2, eris, time+h, no) # C_qp = i<[H,p+q]>
+        dt = (dt1 + 2.0*dt2 + 2.0*dt3 + dt4)/6.0
+        dl = (dl1 + 2.0*dl2 + 2.0*dl3 + dl4)/6.0
+        X  = ( X1 + 2.0* X2 + 2.0* X3 +  X4)/6.0
+        dt1 = dt2 = dt3 = dt4 = None
+        dl1 = dl2 = dl3 = dl4 = None
+        X2 = X3 = X4 = d1 = d2 = None
+        return dt, dl, X, X1, C, d1_, d2_
+
+def electric_dipole(d1, mo_coeff, eris):
+    mux = ao2mo(eris.mu_ao[0,:,:], mo_coeff)
+    muy = ao2mo(eris.mu_ao[1,:,:], mo_coeff)
+    muz = ao2mo(eris.mu_ao[2,:,:], mo_coeff)
+    mux = einsum('pq,qp',mux,d1)
+    muy = einsum('pq,qp',muy,d1)
+    muz = einsum('pq,qp',muz,d1)
+    return np.array((mux, muy, muz))
+
+def compute_trace(d1, d2, no):
+    tr1 = abs(np.trace(d1)-no)
+    d2_ = einsum('prqr->pq',d2)
+    d2_ /= no - 1
+    tr2 = np.linalg.norm(d2_-d1)
+    d2_ = None
+    return np.array((tr1, tr2))
+
+def compute_derivative(f, step):
+    N = len(f)
+    def der(i):
+        if i >= 2 and i <= N-3: # 4 point
+            return (-f[i+2]+8*f[i+1]-8*f[i-1]+f[i-2])/(12*step)
+        if i == 1 or i == N-2:
+            return (f[i+1] - f[i-1])/(2*step)
+        if i == N-1:
+            return (f[i] - f[i-1])/step
+        if i == 0: 
+            return np.zeros_like(f[0])
+    df = np.zeros_like(f,dtype=complex) 
+    for i in range(len(f)):
+        df[i] = der(i)
+    return df
+
+def compute_energy(d1, d2, eris, time=None):
+    eris.full_h(time)
+    E  = einsum('pq,qp',eris.h,d1) 
+    E += 0.25 * einsum('pqrs,rspq',eris.eri,d2)
+    return E
+
+def kernel_rt_test(mf, t, l, U, w, f0, td, tf, step, RK=4, orb=True):
     U = np.array(U, dtype=complex)
     t = np.array(t, dtype=complex)
     l = np.array(l, dtype=complex)
@@ -277,109 +348,126 @@ def kernel_rt_test(mf, t, l, U, w, f0, td, ts, RK4=True, orb=True):
     mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
     eris = ERIs(mf, w, f0, td)
 
-    N = len(ts)
-    d1s = np.zeros((N,nmo,nmo),dtype=complex)  
-    d0s = np.zeros((N,nmo,nmo),dtype=complex)  
+    N = int((tf+step*0.1)/step)
+    d1s = [] 
+    d0s = []
+    RHS = []
+    RHS0 = []
+    E = [] 
 
     d1, d2 = compute_rdms(t, l)
-    d1s[0,:,:] = d1.copy()
-    d0s[0,:,:] = einsum('qp,vq,up->vu',d1,U,U.conj()) # in stationary HF basis
-    tr = abs(np.trace(d1)-no)
-    for i in range(1,N):
-        time = ts[i]
-        step = ts[i] - ts[i-1]
+    eris.ao2mo(mo_coeff)
+    e = compute_energy(d1, d2, eris, time=None)
+    print('check initial energy: {}'.format(e.real+mf.energy_nuc())) 
+    tr = compute_trace(d1, d2, no) 
+    for i in range(N+1):
+        time = i * step 
         eris.ao2mo(mo_coeff)
-        dt, dl = update_RK4(t, l, eris, time, step, RK4)
+        dt, dl = update_RK_(t, l, eris, time, step, RK)
         d1, d2 = compute_rdms(t, l)
-        eris.full_h(time)
-        X, C = compute_X(d1, d2, eris, no) # C_qp = i<[H,p+q]>
+        X, C = compute_X(d1, d2, eris, time, no) # C_qp = i<[H,p+q]>
+        X1 = X.copy()
+#        dt, dl, X, X1, C, d1, d2 = update_RK(t, l, eris, time, step, RK)
+        X = X.copy() if orb else np.zeros_like(X, dtype=complex)
+        X1 = X1.copy() if orb else np.zeros_like(X, dtype=complex)
         # computing observables
-        d1s[i,:,:] = d1.copy()
-        d0s[i,:,:] = einsum('qp,vq,up->vu',d1,U,U.conj()) # in stationary HF basis
-        LHS = (d1s[i,:,:]-d1s[i-1,:,:])/step
-        LHS0 = (d0s[i,:,:]-d0s[i-1,:,:])/step
-        C0 = einsum('qp,vq,up->vu',C,U,U.conj()) # in stationary HF basis
-        tmp  = einsum('rp,qr->qp',X,d1)
-        tmp -= einsum('qr,rp->qp',X,d1)
-        RHS = C + tmp
-        error = LHS-RHS
+        tr += compute_trace(d1, d2, no) 
+        E.append(compute_energy(d1, d2, eris, time=None))
+        d1s.append(d1.copy())
+        d0s.append(einsum('qp,vq,up->vu',d1,U,U.conj())) # in stationary HF basis
+        LHS = (d1s[i]-d1s[i-1])/step
+        LHS0 = (d0s[i]-d0s[i-1])/step
+        tmp  = einsum('rp,qr->qp',X1,d1)
+        tmp -= einsum('qr,rp->qp',X1,d1)
+        RHS.append(C + tmp)
+        RHS0.append(einsum('qp,vq,up->vu',C,U,U.conj())) # in stationary HF basis
+        err = LHS-RHS[i]
 #
-        LHS_  = einsum('vu,up,vq->qp',LHS0,U,U.conj())
-        dU = np.dot(U, X)
-        tmp_  = einsum('vu,up,vq->qp',d0s[i,:,:],dU,U.conj())
-        tmp_ += einsum('vu,up,vq->qp',d0s[i,:,:],U,dU.conj())
-        LHS_ += tmp_.copy()
-        diff = LHS - LHS_
+#        LHS_  = einsum('vu,up,vq->qp',LHS0,U,U.conj())
+#        dU = np.dot(U, X)
+#        tmp_  = einsum('vu,up,vq->qp',d0s[i,:,:],dU,U.conj())
+#        tmp_ += einsum('vu,up,vq->qp',d0s[i,:,:],U,dU.conj())
+#        LHS_ += tmp_.copy()
+#        diff = LHS - LHS_
 #
-        print('time: {:.4f}, err oo: {}, vv: {}, ov: {}, vo: {}, diff oo: {}, vv: {}, ov: {}, vo: {}, err0: {}, X: {}'.format(time,
-              np.linalg.norm(error[:no,:no]), np.linalg.norm(error[no:,no:]), 
-              np.linalg.norm(RHS[:no,no:]), np.linalg.norm(RHS[no:,:no]),
-              np.linalg.norm(diff[:no,:no]), np.linalg.norm(diff[no:,no:]), 
-              np.linalg.norm(diff[:no,no:]), np.linalg.norm(diff[no:,:no]),
-              np.linalg.norm(LHS0-C0), np.linalg.norm(X)))
-        if np.linalg.norm(error) > 1.0:
+#        print('time: {:.4f}, err oo: {}, vv: {}, ov: {}, vo: {}, diff oo: {}, vv: {}, ov: {}, vo: {}, err0: {}, X: {}'.format(time,
+#              np.linalg.norm(error[:no,:no]), np.linalg.norm(error[no:,no:]), 
+#              np.linalg.norm(RHS[:no,no:]), np.linalg.norm(RHS[no:,:no]),
+#              np.linalg.norm(diff[:no,:no]), np.linalg.norm(diff[no:,no:]), 
+#              np.linalg.norm(diff[:no,no:]), np.linalg.norm(diff[no:,:no]),
+#              np.linalg.norm(LHS0-C0), np.linalg.norm(X)))
+#
+        print('time: {:.4f}, E(mH): {}, err: {}, X: {}'.format(
+              time, (E[-1] - E[0]).real*1e3,
+              np.linalg.norm(err), np.linalg.norm(X)))
+        if np.linalg.norm(err) > 1.0:
             print('diverging error!')
             break
         t += step * dt
         l += step * dl
-        X = X.copy() if orb else np.zeros_like(X, dtype=complex)
         U = np.dot(U, scipy.linalg.expm(step*X))
+#        U += step * np.dot(U,X)
         mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
+    E = np.array(E)
     print('check trace: {}'.format(tr))
+    print('check E imag: {}'.format(np.linalg.norm(E.imag)))
+    print('check error')
+    LHS = compute_derivative(d1s, step)
+    LHS0 = compute_derivative(d0s, step)
+    for i in range(len(LHS)):
+        print('err: {}, err0: {}'.format(
+              np.linalg.norm(LHS[i]-RHS[i]),np.linalg.norm(LHS0[i]-RHS0[i])))
+    return (E - E[0]).real
 
-def kernel_rt(mf, t, l, U, w, f0, td, ts, RK4=True):
+def kernel_rt(mf, t, l, U, w, f0, td, tf, step, RK=4, orb=True):
     U = np.array(U, dtype=complex)
     t = np.array(t, dtype=complex)
     l = np.array(l, dtype=complex)
     no, _, nv, _ = l.shape
+    nmo = U.shape[0]
     mo0 = mf.mo_coeff.copy()
     mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
     eris = ERIs(mf, w, f0, td)
 
-    N = len(ts)
-    mus = np.zeros((N,3),dtype=complex)  
-    Hmu = np.zeros((N,3),dtype=complex)  
-    Es = np.zeros(N,dtype=complex)
+    N = int((tf+step*0.1)/step)
+    mus = np.zeros((N+1,3),dtype=complex)  
+    Hmu = np.zeros((N+1,3),dtype=complex)  
+    Es = np.zeros(N+1,dtype=complex)
 
     d1, d2 = compute_rdms(t, l)
-    mux = ao2mo(eris.mu_ao[0,:,:], mo_coeff)
-    muy = ao2mo(eris.mu_ao[1,:,:], mo_coeff)
-    muz = ao2mo(eris.mu_ao[2,:,:], mo_coeff)
-    mus[0,0] = einsum('pq,qp',mux,d1)
-    mus[0,1] = einsum('pq,qp',muy,d1)
-    mus[0,2] = einsum('pq,qp',muz,d1)
+    mus[0,:] = electric_dipole(d1, mo_coeff, eris)
     eris.ao2mo(mo_coeff)
-    eris.full_h(time=0.0)
+    eris.full_h(time=None)
     Es[0]  = einsum('pq,qp',eris.h,d1) 
     Es[0] += 0.25 * einsum('pqrs,rspq',eris.eri,d2)
-    for i in range(1,N):
-        time = ts[i]
-        step = ts[i] - ts[i-1]
+    print('check ground state energy: {}'.format(Es[0].real+mf.energy_nuc()))
+    tr = compute_trace(d1, d2, no) 
+    for i in range(N+1):
+        time = i * step 
         eris.ao2mo(mo_coeff)
-        dt, dl = update_RK4(t, l, eris, time, step, RK4)
+        dt, dl = update_RK(t, l, eris, time, step, RK)
         d1, d2 = compute_rdms(t, l)
-        eris.full_h(time)
-        X, C = compute_X(d1, d2, eris, no) # C_qp = i<[H,p+q]>
+        X, C = compute_X(d1, d2, eris, time, no) # C_qp = i<[H,p+q]>
+        X = X.copy() if orb else np.zeros_like(X, dtype=complex)
         # computing observables
-        mux = ao2mo(eris.mu_ao[0,:,:], mo_coeff)
-        muy = ao2mo(eris.mu_ao[1,:,:], mo_coeff)
-        muz = ao2mo(eris.mu_ao[2,:,:], mo_coeff)
-        mus[i,0] = einsum('pq,qp',mux,d1)
-        mus[i,1] = einsum('pq,qp',muy,d1)
-        mus[i,2] = einsum('pq,qp',muz,d1)
-        Hmu[i,0] = einsum('pq,qp',mux,C)
-        Hmu[i,1] = einsum('pq,qp',muy,C)
-        Hmu[i,2] = einsum('pq,qp',muz,C)
+        tr += compute_trace(d1, d2, no) 
+        mus[i,:] = electric_dipole(d1, mo_coeff, eris)
+        Hmu[i,:] = electric_dipole(C, mo_coeff, eris) 
+        eris.full_h(time=None)
         Es[i]  = einsum('pq,qp',eris.h,d1) 
         Es[i] += 0.25 * einsum('pqrs,rspq',eris.eri,d2)
-        error = (mus[i,:]-mus[i-1,:])/step - Hmu[i] 
-        print('time: {:.4f}, ehrenfest: {}, imag: {}, E.imag: {}'.format(time,
-              np.linalg.norm(error), np.linalg.norm(mus[i,:].imag), Es[i].imag))
+        err = (mus[i,:]-mus[i-1,:])/step - Hmu[i] 
+        print('time: {:.4f}, E(mH): {}, mu: {}, err: {}'.format(
+               time,(Es[i] - Es[0]).real*1e3,(mus[i,:].real-eris.nucl_dip)*1e3, 
+              np.linalg.norm(err)))
         t += step * dt
         l += step * dl
         U = np.dot(U, scipy.linalg.expm(step*X))
         mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
-    return mus, Es
+    print('check trace: {}'.format(tr))
+    print('check E imag: {}'.format(np.linalg.norm(Es.imag)))
+    print('check mu imag: {}'.format(np.linalg.norm(mus.imag)))
+    return mus.real-eris.nucl_dip, (Es - Es[0]).real
 
 class ERIs:
     def __init__(self, mf, w=0.0, f0=np.zeros(3), td=0.0):
@@ -387,11 +475,21 @@ class ERIs:
         self.eri_ao = mf.mol.intor('int2e_sph')
         self.mu_ao = mf.mol.intor('int1e_r')
         self.h1ao = einsum('xuv,x->uv',self.mu_ao,f0)
-#        self.mo0 = mf.mo_coeff
+        charges = mf.mol.atom_charges()
+        coords  = mf.mol.atom_coords()
+        self.nucl_dip = einsum('i,ix->x', charges, coords)
 
         self.w = w
         self.f0 = f0
         self.td = td
+
+#
+        sao = mf.get_ovlp()
+        nao = sao.shape[0]
+        mo0 = mf.mo_coeff
+        print(np.linalg.norm(np.eye(nao)-einsum('up,uv,vq->pq',mo0,sao,mo0)))
+        exit()
+#
 
     def ao2mo(self, mo_coeff):
         moa, mob = mo_coeff 
@@ -410,11 +508,13 @@ class ERIs:
         eri_ab = eri_ab.transpose(0,2,1,3)
         eri = sort2((eri_aa, eri_ab, eri_bb), anti=False)
         self.eri = eri - eri.transpose(0,1,3,2)
+        eri_aa = eri_ab = eri_bb = eri = moa = mob = None
 
-    def full_h(self, time=0.0):
+    def full_h(self, time=None):
         self.h = self.h0.copy()
-        if time < self.td:
-            evlp = math.sin(math.pi*time/self.td)**2
-            osc = math.sin(self.w*time)
-            self.h += self.h1 * evlp * osc
-            
+        if time is not None:
+            if time < self.td:
+                evlp = math.sin(math.pi*time/self.td)**2
+                osc = math.cos(self.w*(time-self.td*0.5))
+                self.h += self.h1 * evlp * osc
+                
