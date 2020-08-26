@@ -248,11 +248,6 @@ def compute_energy(d1, d2, eris):
     e += 0.25 * einsum('pqrs,rspq',eris.eri,d2)
     return e.real
 
-def ao2mo(Aao, mo_coeff):
-    Aa = einsum('uv,up,vq->pq',Aao,mo_coeff[0].conj(),mo_coeff[0])
-    Ab = einsum('uv,up,vq->pq',Aao,mo_coeff[1].conj(),mo_coeff[1])
-    return sort1((Aa,Ab))
-
 def update_RK_(t, l, eris, time, h, RK):
     dt1, dl1 = update_amps(t, l, eris, time)
     if RK == 1:
@@ -299,15 +294,6 @@ def update_RK(t, l, eris, time, h, RK):
         X2 = X3 = X4 = d1 = d2 = None
         return dt, dl, X, X1, C, d1_, d2_
 
-def electric_dipole(d1, mo_coeff, eris):
-    mux = ao2mo(eris.mu_ao[0,:,:], mo_coeff)
-    muy = ao2mo(eris.mu_ao[1,:,:], mo_coeff)
-    muz = ao2mo(eris.mu_ao[2,:,:], mo_coeff)
-    mux = einsum('pq,qp',mux,d1)
-    muy = einsum('pq,qp',muy,d1)
-    muz = einsum('pq,qp',muz,d1)
-    return np.array((mux, muy, muz))
-
 def compute_trace(d1, d2, no):
     tr1 = abs(np.trace(d1)-no)
     d2_ = einsum('prqr->pq',d2)
@@ -338,85 +324,68 @@ def compute_energy(d1, d2, eris, time=None):
     E += 0.25 * einsum('pqrs,rspq',eris.eri,d2)
     return E
 
+def rotate1(A, U):
+    return einsum('...pq,pr,qs->...rs',A,U.conj(),U)
+
+def rotate2(A, U):
+    A = einsum('pqrs,pu,qv->uvrs',A,U.conj(),U.conj())
+    return einsum('uvrs,rx,sy->uvxy',A,U,U)
+
 def kernel_rt_test(mf, t, l, U, w, f0, td, tf, step, RK=4, orb=True):
+    eris = ERIs(mf, w, f0, td) # in HF basis
+    d1, d2 = compute_rdms(t, l)
+    d1 = rotate1(d1, U.T) 
+    d2 = rotate2(d2, U.T) 
+    e = compute_energy(d1, d2, eris, time=None)
+    print('check initial energy: {}'.format(e.real+mf.energy_nuc())) 
+
+    no, _, nv, _ = l.shape
+    nmo = U.shape[0]
+    N = int((tf+step*0.1)/step)
+
+    R = np.eye(nmo, dtype=complex)
     U = np.array(U, dtype=complex)
     t = np.array(t, dtype=complex)
     l = np.array(l, dtype=complex)
-    no, _, nv, _ = l.shape
-    nmo = U.shape[0]
-    mo0 = mf.mo_coeff.copy()
-    mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
-    eris = ERIs(mf, w, f0, td)
 
-    N = int((tf+step*0.1)/step)
-    d1s = [] 
-    d0s = []
-    RHS = []
-    RHS0 = []
-    E = [] 
-
-    d1, d2 = compute_rdms(t, l)
-    eris.ao2mo(mo_coeff)
-    e = compute_energy(d1, d2, eris, time=None)
-    print('check initial energy: {}'.format(e.real+mf.energy_nuc())) 
+    d1_ = []
+    RHS_ = []
+    E = []
     tr = compute_trace(d1, d2, no) 
     for i in range(N+1):
         time = i * step 
-        eris.ao2mo(mo_coeff)
+        eris.rotate(U)
         dt, dl = update_RK_(t, l, eris, time, step, RK)
         d1, d2 = compute_rdms(t, l)
+        d1 = rotate1(d1, R)
+        d2 = rotate2(d2, R)
         X, C = compute_X(d1, d2, eris, time, no) # C_qp = i<[H,p+q]>
-        X1 = X.copy()
-#        dt, dl, X, X1, C, d1, d2 = update_RK(t, l, eris, time, step, RK)
-        X = X.copy() if orb else np.zeros_like(X, dtype=complex)
-        X1 = X1.copy() if orb else np.zeros_like(X, dtype=complex)
+#        X = X if orb else np.zeros_like(X, dtype=complex)
         # computing observables
         tr += compute_trace(d1, d2, no) 
         E.append(compute_energy(d1, d2, eris, time=None))
-        d1s.append(d1.copy())
-        d0s.append(einsum('qp,vq,up->vu',d1,U,U.conj())) # in stationary HF basis
-        LHS = (d1s[i]-d1s[i-1])/step
-        LHS0 = (d0s[i]-d0s[i-1])/step
-        tmp  = einsum('rp,qr->qp',X1,d1)
-        tmp -= einsum('qr,rp->qp',X1,d1)
-        RHS.append(C + tmp)
-        RHS0.append(einsum('qp,vq,up->vu',C,U,U.conj())) # in stationary HF basis
-        err = LHS-RHS[i]
-#
-#        LHS_  = einsum('vu,up,vq->qp',LHS0,U,U.conj())
-#        dU = np.dot(U, X)
-#        tmp_  = einsum('vu,up,vq->qp',d0s[i,:,:],dU,U.conj())
-#        tmp_ += einsum('vu,up,vq->qp',d0s[i,:,:],U,dU.conj())
-#        LHS_ += tmp_.copy()
-#        diff = LHS - LHS_
-#
-#        print('time: {:.4f}, err oo: {}, vv: {}, ov: {}, vo: {}, diff oo: {}, vv: {}, ov: {}, vo: {}, err0: {}, X: {}'.format(time,
-#              np.linalg.norm(error[:no,:no]), np.linalg.norm(error[no:,no:]), 
-#              np.linalg.norm(RHS[:no,no:]), np.linalg.norm(RHS[no:,:no]),
-#              np.linalg.norm(diff[:no,:no]), np.linalg.norm(diff[no:,no:]), 
-#              np.linalg.norm(diff[:no,no:]), np.linalg.norm(diff[no:,:no]),
-#              np.linalg.norm(LHS0-C0), np.linalg.norm(X)))
-#
+        d1_.append(rotate1(d1, U.T.conj())) # in HF basis
+        LHS_ = (d1_[i]-d1_[i-1])/step
+        RHS_.append(rotate1(C, U.T.conj())) # in HF basis
+        err = LHS_-RHS_[-1]
         print('time: {:.4f}, E(mH): {}, err: {}, X: {}'.format(
-              time, (E[-1] - E[0]).real*1e3,
+              time, (E[i] - E[i-1]).real*1e3,
               np.linalg.norm(err), np.linalg.norm(X)))
         if np.linalg.norm(err) > 1.0:
             print('diverging error!')
             break
         t += step * dt
         l += step * dl
-        U = np.dot(U, scipy.linalg.expm(step*X))
-#        U += step * np.dot(U,X)
-        mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
+        R = scipy.linalg.expm(step*X)
+        U = np.dot(U, R)
     E = np.array(E)
     print('check trace: {}'.format(tr))
     print('check E imag: {}'.format(np.linalg.norm(E.imag)))
     print('check error')
-    LHS = compute_derivative(d1s, step)
-    LHS0 = compute_derivative(d0s, step)
-    for i in range(len(LHS)):
-        print('err: {}, err0: {}'.format(
-              np.linalg.norm(LHS[i]-RHS[i]),np.linalg.norm(LHS0[i]-RHS0[i])))
+    LHS_ = compute_derivative(d1_, step)
+    for i in range(len(LHS_)):
+        print('d1: {}'.format(
+              np.linalg.norm(LHS_[i]-RHS_[i]),))
     return (E - E[0]).real
 
 def kernel_rt(mf, t, l, U, w, f0, td, tf, step, RK=4, orb=True):
@@ -471,10 +440,10 @@ def kernel_rt(mf, t, l, U, w, f0, td, tf, step, RK=4, orb=True):
 
 class ERIs:
     def __init__(self, mf, w=0.0, f0=np.zeros(3), td=0.0):
-        self.hao = mf.get_hcore()
-        self.eri_ao = mf.mol.intor('int2e_sph')
-        self.mu_ao = mf.mol.intor('int1e_r')
-        self.h1ao = einsum('xuv,x->uv',self.mu_ao,f0)
+        hao = mf.get_hcore()
+        eri_ao = mf.mol.intor('int2e_sph')
+        mu_ao = mf.mol.intor('int1e_r')
+        h1ao = einsum('xuv,x->uv',mu_ao,f0)
         charges = mf.mol.atom_charges()
         coords  = mf.mol.atom_coords()
         self.nucl_dip = einsum('i,ix->x', charges, coords)
@@ -483,32 +452,37 @@ class ERIs:
         self.f0 = f0
         self.td = td
 
-#
-        sao = mf.get_ovlp()
-        nao = sao.shape[0]
-        mo0 = mf.mo_coeff
-        print(np.linalg.norm(np.eye(nao)-einsum('up,uv,vq->pq',mo0,sao,mo0)))
-        exit()
-#
-
-    def ao2mo(self, mo_coeff):
-        moa, mob = mo_coeff 
-    
-        self.h0 = ao2mo(self.hao, mo_coeff)
-        self.h1 = ao2mo(self.h1ao, mo_coeff)
-    
-        eri_aa = einsum('uvxy,up,vr->prxy',self.eri_ao,moa.conj(),moa)
-        eri_aa = einsum('prxy,xq,ys->prqs',eri_aa,     moa.conj(),moa)
-        eri_aa = eri_aa.transpose(0,2,1,3)
-        eri_bb = einsum('uvxy,up,vr->prxy',self.eri_ao,mob.conj(),mob)
-        eri_bb = einsum('prxy,xq,ys->prqs',eri_bb,     mob.conj(),mob)
-        eri_bb = eri_bb.transpose(0,2,1,3)
-        eri_ab = einsum('uvxy,up,vr->prxy',self.eri_ao,moa.conj(),moa)
-        eri_ab = einsum('prxy,xq,ys->prqs',eri_ab,     mob.conj(),mob)
+        mo_coeff = mf.mo_coeff.copy()
+        h0 = einsum('uv,up,vq->pq',hao,mo_coeff,mo_coeff)
+        h1 = einsum('uv,up,vq->pq',h1ao,mo_coeff,mo_coeff)
+        mu = einsum('xuv,up,vq->xpq',mu_ao,mo_coeff,mo_coeff)
+        eri = einsum('uvxy,up,vr->prxy',eri_ao,mo_coeff,mo_coeff)
+        eri_ab = einsum('prxy,xq,ys->prqs',eri,mo_coeff,mo_coeff)
         eri_ab = eri_ab.transpose(0,2,1,3)
-        eri = sort2((eri_aa, eri_ab, eri_bb), anti=False)
-        self.eri = eri - eri.transpose(0,1,3,2)
-        eri_aa = eri_ab = eri_bb = eri = moa = mob = None
+        eri_aa = eri_ab - eri_ab.transpose(0,1,3,2)
+
+        self.h0_ = sort1((h0,h0))
+        self.h1_ = sort1((h1,h1))
+        mux = sort1((mu[0,:,:],mu[0,:,:]))
+        muy = sort1((mu[1,:,:],mu[1,:,:]))
+        muz = sort1((mu[2,:,:],mu[2,:,:]))
+        self.mu_ = np.array((mux,muy,muz))
+        self.eri_ = sort2((eri_aa, eri_ab, eri_aa),anti=True)
+
+        self.h0 = self.h0_.copy()
+        self.h1 = self.h1_.copy()
+        self.mu = self.mu_.copy()
+        self.eri = self.eri_.copy()
+
+        hao = h1ao = h0 = h1 = None
+        mu_ao = mu = mux = muy = muz = None
+        eri = eri_ab = eri_aa = None
+
+    def rotate(self, U):
+        self.h0 = rotate1(self.h0_, U)
+        self.h1 = rotate1(self.h1_, U)
+        self.mu = rotate1(self.mu_, U)
+        self.eri = rotate2(self.eri_, U)
 
     def full_h(self, time=None):
         self.h = self.h0.copy()
