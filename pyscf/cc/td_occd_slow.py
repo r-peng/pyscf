@@ -399,21 +399,24 @@ def compute_X(d1, d2, eris, time, no):
     X[no:,:no] = Xvo.copy()
     return 1j*X, 1j*F.T
 
-def compute_der1(t, l, C, X, d1, eris, time):
+def ehrenfest_err(t, l, C, d1, d2, eris, time):
     # analytical 1st time derivative of <U^{-1}p+qU>
+    no = l.shape[0]
+    X, F = compute_X(d1, d2, eris, time, no)
 
     # amplitude component
     dt, dl = update_amps(t, l, eris, time)
     d11 = compute_rdm1(t, l, dt, dl, order=1)
     d11 = rotate1(d11, C.T.conj())
+    dt = dl = None
 
     # orbital component
     dC = - np.dot(X,C)
     tmp  = einsum('sr,rp,sq->qp',d1,dC,C.conj())
     tmp += einsum('sr,rp,sq->qp',d1,C,dC.conj())
-    return d11 + tmp
+    return np.linalg.norm(d11 + tmp - rotate1(F, C.T.conj()))
 
-def energy_err(t, l, X, d1, d2, eris, time):
+def energy_err(t, l, d1, d2, eris, time):
     # analytical nonconservation error from derivative of wavefunction
     # err = d<U^{-1}HU>/dt - <U^{-1}\dot{H}U>
     #     = <\dot{l}|U^{-1}HU|r> + <l|U^{-1}HU|\dot{r}> # amplitude component 
@@ -425,6 +428,8 @@ def energy_err(t, l, X, d1, d2, eris, time):
     d11, d21 = compute_rdm12(t, l, dt, dl, order=1)
     err_amp = compute_energy(d11, d21, eris, time) 
     # orbital component
+    no = l.shape[0]
+    X, _ = compute_X(d1, d2, eris, time, no)
     tmp1  = einsum('ur,rv->uv',eris.h,X)
     tmp1 -= einsum('ur,rv->uv',X,eris.h)
     tmp2  = 0.5 * einsum('uvxw,wy->uvxy',eris.eri,X)
@@ -456,6 +461,46 @@ def update_RK(t, l, eris, time, h, RK):
         dt1 = dt2 = dt3 = dt4 = dl1 = dl2 = dl3 = dl4 = None
         return dt, dl
 
+def update_RK_(t, l, C, eris, time, h, RK):
+    no = l.shape[0]
+    eris.rotate(C)
+    d1, d2 = compute_rdm12(t, l)
+    dt1, dl1 = update_amps(t, l, eris, time)
+    X1, _ = compute_X(d1, d2, eris, time, no) 
+    if RK == 1:
+        return dt1, dl1, X1, d1, d2
+    if RK == 4:
+        C_ = np.dot(scipy.linalg.expm(-X1*h*0.5), C)
+        t_ = t + dt1*h*0.5
+        l_ = l + dl1*h*0.5
+        eris.rotate(C_)
+        d1_, d2_ = compute_rdm12(t_, l_)
+        dt2, dl2 = update_amps(t_, l_, eris, time+h*0.5)
+        X2, _ = compute_X(d1_, d2_, eris, time+h*0.5, no)
+
+        C_ = np.dot(scipy.linalg.expm(-X2*h*0.5), C)
+        t_ = t + dt2*h*0.5
+        l_ = l + dl2*h*0.5
+        eris.rotate(C_)
+        d1_, d2_ = compute_rdm12(t_, l_)
+        dt3, dl3 = update_amps(t_, l_, eris, time+h*0.5)
+        X3, _ = compute_X(d1_, d2_, eris, time+h*0.5, no)
+    
+        C_ = np.dot(scipy.linalg.expm(-X3*h), C)
+        t_ = t + dt3*h
+        l_ = l + dl3*h
+        eris.rotate(C_)
+        d1_, d2_ = compute_rdm12(t_, l_)
+        dt4, dl4 = update_amps(t_, l_, eris, time+h)
+        X4, _ = compute_X(d1_, d2_, eris, time+h, no)
+    
+        dt = (dt1 + 2.0*dt2 + 2.0*dt3 + dt4)/6.0
+        dl = (dl1 + 2.0*dl2 + 2.0*dl3 + dl4)/6.0
+        X = (X1 + 2.0*X2 + 2.0*X3 + X4)/6.0
+        dt1 = dt2 = dt3 = dt4 = dl1 = dl2 = dl3 = dl4 = None
+        d1_ = d2_ = t_ = l_ = C_ = None
+        return dt, dl, X, d1, d2
+
 def trace_err(d1, d2, no):
     # err1 = d_{pp} - N
     # err2 = d_{prqr}/(N-1) - d_{pq}
@@ -475,7 +520,7 @@ def rotate2(A, C):
     A = einsum('pqrs,up,vq->uvrs',A,C,C)
     return einsum('uvrs,xr,ys->uvxy',A,C.conj(),C.conj())
 
-def kernel_rt_test(mf, t, l, C, w, f0, td, tf, step, RK=4, orb=True):
+def kernel_rt(mf, t, l, C, w, f0, td, tf, step, RK=4, orb=True):
     eris = ERIs(mf, w, f0, td) # in HF basis
     C = np.array(C, dtype=complex)
     t = np.array(t, dtype=complex)
@@ -490,21 +535,29 @@ def kernel_rt_test(mf, t, l, C, w, f0, td, tf, step, RK=4, orb=True):
     N = int((tf+step*0.1)/step)
 
     E = np.zeros(N+1,dtype=complex) 
+    mu = np.zeros((N+1,3),dtype=complex)  
     tr = np.zeros(2) # trace error
     ec = np.zeros(2) # energy conservation error 
     ehr = 0.0 # ehrenfest error = d<U^{-1}p+qU>/dt - i<U^{-1}[H,p+q]U>
     for i in range(N+1):
-        time = i * step 
+        time = i * step
+# RK4 scheme 1 
+#        eris.rotate(C)
+#        d1, d2 = compute_rdm12(t, l)
+#        dt, dl = update_RK(t, l, eris, time, step, RK)
+#        X, F = compute_X(d1, d2, eris, time, no) # F_{qp} = i<[U^{-1}HU,p+q]>
+# RK4 scheme 1 
+# RK4 scheme 2 
+        dt, dl, X, d1, d2 = update_RK_(t, l, C, eris, time, step, RK)
         eris.rotate(C)
-        d1, d2 = compute_rdm12(t, l)
+# RK4 scheme 2 
         E[i] = compute_energy(d1, d2, eris, time=None) # <U^{-1}H0U>
-        dt, dl = update_RK(t, l, eris, time, step, RK)
-        X, F = compute_X(d1, d2, eris, time, no) # F_{qp} = i<[U^{-1}HU,p+q]>
+        mu[i,:] = einsum('qp,xpq->x',rotate1(d1,C.T.conj()),eris.mu_) 
         X = X if orb else np.zeros_like(X, dtype=complex)
         # accumulate analytical error
         tr += np.array(trace_err(d1, d2, no))
-        ec += np.array(energy_err(t, l, X, d1, d2, eris, time))
-        ehr += np.linalg.norm(compute_der1(t, l, C, X, d1, eris, time)-rotate1(F,C.T.conj()))
+        ec += np.array(energy_err(t, l, d1, d2, eris, time))
+        ehr += ehrenfest_err(t, l, C, d1, d2, eris, time)
         print('time: {:.4f}, EE(mH): {}, X: {}'.format(
               time, (E[i] - E[0]).real*1e3, np.linalg.norm(X)))
         # update 
@@ -515,58 +568,8 @@ def kernel_rt_test(mf, t, l, C, w, f0, td, tf, step, RK=4, orb=True):
     print('Ehrenfest error: ', ehr)
     print('energy conservation error: ', ec)
     print('imaginary part of energy: ', np.linalg.norm(E.imag))
-    return (E - E[0]).real
+    return (E - E[0]).real, (mu - eris.nucl_dip).real
 
-# not used for now
-#def kernel_rt(mf, t, l, U, w, f0, td, tf, step, RK=4, orb=True):
-#    U = np.array(U, dtype=complex)
-#    t = np.array(t, dtype=complex)
-#    l = np.array(l, dtype=complex)
-#    no, _, nv, _ = l.shape
-#    nmo = U.shape[0]
-#    mo0 = mf.mo_coeff.copy()
-#    mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
-#    eris = ERIs(mf, w, f0, td)
-#
-#    N = int((tf+step*0.1)/step)
-#    mus = np.zeros((N+1,3),dtype=complex)  
-#    Hmu = np.zeros((N+1,3),dtype=complex)  
-#    Es = np.zeros(N+1,dtype=complex)
-#
-#    d1, d2 = compute_rdms(t, l)
-#    mus[0,:] = electric_dipole(d1, mo_coeff, eris)
-#    eris.ao2mo(mo_coeff)
-#    eris.full_h(time=None)
-#    Es[0]  = einsum('pq,qp',eris.h,d1) 
-#    Es[0] += 0.25 * einsum('pqrs,rspq',eris.eri,d2)
-#    print('check ground state energy: {}'.format(Es[0].real+mf.energy_nuc()))
-#    tr = compute_trace(d1, d2, no) 
-#    for i in range(N+1):
-#        time = i * step 
-#        eris.ao2mo(mo_coeff)
-#        dt, dl = update_RK(t, l, eris, time, step, RK)
-#        d1, d2 = compute_rdms(t, l)
-#        X, C = compute_X(d1, d2, eris, time, no) # C_qp = i<[H,p+q]>
-#        X = X.copy() if orb else np.zeros_like(X, dtype=complex)
-#        # computing observables
-#        tr += compute_trace(d1, d2, no) 
-#        mus[i,:] = electric_dipole(d1, mo_coeff, eris)
-#        Hmu[i,:] = electric_dipole(C, mo_coeff, eris) 
-#        eris.full_h(time=None)
-#        Es[i]  = einsum('pq,qp',eris.h,d1) 
-#        Es[i] += 0.25 * einsum('pqrs,rspq',eris.eri,d2)
-#        err = (mus[i,:]-mus[i-1,:])/step - Hmu[i] 
-#        print('time: {:.4f}, E(mH): {}, mu: {}, err: {}'.format(
-#               time,(Es[i] - Es[0]).real*1e3,(mus[i,:].real-eris.nucl_dip)*1e3, 
-#              np.linalg.norm(err)))
-#        t += step * dt
-#        l += step * dl
-#        U = np.dot(U, scipy.linalg.expm(step*X))
-#        mo_coeff = np.dot(mo0,U[::2,::2]), np.dot(mo0,U[1::2,1::2])
-#    print('check trace: {}'.format(tr))
-#    print('check E imag: {}'.format(np.linalg.norm(Es.imag)))
-#    print('check mu imag: {}'.format(np.linalg.norm(mus.imag)))
-#    return mus.real-eris.nucl_dip, (Es - Es[0]).real
 
 class ERIs:
     def __init__(self, mf, w=0.0, f0=np.zeros(3), td=0.0):
@@ -603,7 +606,6 @@ class ERIs:
         # U^{-1}HU assuming U = 1
         self.h0 = self.h0_.copy()
         self.h1 = self.h1_.copy()
-        self.mu = self.mu_.copy()
         self.eri = self.eri_.copy()
 
         hao = h1ao = h0 = h1 = None
@@ -623,8 +625,16 @@ def full_h(h0, h1, w=None, td=None, time=None):
     # computes H = H0 + H1(t)
     h = h0.copy()
     if time is not None:
-        if time < td:
-            evlp = math.sin(math.pi*time/td)**2
-            osc = math.cos(w*(time-td*0.5))
-            h += h1 * evlp * osc
+        h += h1 * fac(w, td, time) 
     return h
+
+def fac(w, td, time=None):
+    if time > td:
+        return 0.0 
+    else:
+        evlp = math.sin(math.pi*time/td)**2
+#        evlp = 1.0
+#        osc = math.sin(w*time)
+        osc = 1.0
+        return evlp * osc
+

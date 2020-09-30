@@ -1,4 +1,5 @@
-from pyscf import lib, fci
+from pyscf import lib, fci, cc
+from pyscf.cc import td_occd_slow
 from pyscf.fci import direct_spin1, cistring
 import numpy as np
 import math
@@ -10,7 +11,8 @@ def update_ci(c, eris, time=None):
     def _hop(c):
         return direct_spin1.contract_2e(h2e, c, eris.nao, eris.nelec)
     Hc = _hop(c)
-    Hc -= eris.E0 * c
+    if time is not None:
+        Hc -= eris.E0 * c * td_occd_slow.fac(eris.w, eris.td, time)
     h2e = None
     return - Hc
 
@@ -19,11 +21,20 @@ def update_RK(c, eris, step, RK=4):
     if RK == 1:
         return dc1
     if RK == 4: 
-        dc2 = update_ci(c+dc1*step*0.5, eris)
-        dc3 = update_ci(c+dc2*step*0.5, eris)
-        dc4 = update_ci(c+dc3*step    , eris)
+        c_ = c+dc1*step*0.5
+        c_ /= np.linalg.norm(c_)
+        dc2 = update_ci(c_, eris)
+
+        c_ = c+dc2*step*0.5
+        c_ /= np.linalg.norm(c_)
+        dc3 = update_ci(c_, eris)
+
+        c_ = c+dc3*step
+        c_ /= np.linalg.norm(c_)
+        dc4 = update_ci(c_, eris)
+
         dc = (dc1+2.0*dc2+2.0*dc3+dc4)/6.0
-        dc1 = dc2 = dc3 = dc4 = None
+        dc1 = dc2 = dc3 = dc4 = c_ = None
         return dc
 
 def compute_energy(d1, d2, eris, time=None):
@@ -81,79 +92,103 @@ def kernel_it(mf, step=0.01, maxiter=1000, thresh=1e-6, RK=4):
             break
     return c, E
 
-def kernel_rt_test(mf, c, w, f0, td, tf, step, RK=4, mo_coeff=None):
+def kernel_rt(mf, c, w, f0, td, tf, step, RK=4, mo_coeff=None):
     eris = ERIs(mf, w, f0, td, mo_coeff)
     c = CI(c)
     d1, d2 = c.compute_rdm12(c.real, c.imag, eris.nao, eris.nelec)
     e = compute_energy(d1, d2, eris, time=None)
     print('check initial energy: {}'.format(e.real+mf.energy_nuc()))
-
+#
+    M = c.real.shape[0]
+    cisolver = fci.FCI(mf.mol, eris.mo_coeff) 
+    cisolver.nroots = M**2
+    cisolver.kernel()
+    eci = np.array(cisolver.eci) - mf.energy_nuc()
+    v2 = einsum('NIJ,IJ->N',np.array(cisolver.ci),c.real+1j*c.imag)
+    v3 = einsum('NIJ,IJ->N',np.array(cisolver.ci),c.real+1j*c.imag)
+    h1 = np.zeros((cisolver.nroots,)*2)
+    for m in range(cisolver.nroots):
+        for n in range(cisolver.nroots):
+            d1 = direct_spin1.trans_rdm1s(cisolver.ci[m],cisolver.ci[n],eris.nao,eris.nelec)
+            h1[m,n] = np.dot(electric_dipole(d1, eris), f0)
+    h1 -= np.eye(cisolver.nroots) * eris.E0
+    def update2(c, t):
+        phase = np.exp(-1j*t*eci)
+        Hc = np.dot(h1,np.multiply(c,phase))*td_occd_slow.fac(w, td, t)
+        return -1j*np.multiply(Hc,phase.conj())
+    def update3(c, t):
+        Hc  = np.dot(h1,c)*td_occd_slow.fac(w, td, t)
+        Hc += np.multiply(c,eci)
+        return -1j * Hc
+    def _RK(c, t, h, RK, update):
+        dc1 = update(c, t)
+        if RK == 1:
+            return dc1
+        if RK == 4:
+            c_ = c + dc1*h*0.5
+            c_ /= np.linalg.norm(c_)
+            dc2 = update(c_, t + h*0.5)
+            c_ = c + dc2*h*0.5
+            c_ /= np.linalg.norm(c_)
+            dc3 = update(c_, t + h*0.5)
+            c_ = c + dc3*h
+            c_ /= np.linalg.norm(c_)
+            dc4 = update(c_, t + h)
+            return (dc1+2.0*dc2+2.0*dc3+dc4)/6.0
+#
     N = int((tf+step*0.1)/step)
     E = np.zeros(N+1, dtype=complex) 
+    E2 = np.zeros(N+1, dtype=complex)
+    mu = np.zeros((N+1,3),dtype=complex)
     tr = np.zeros(2) # trace error
     ehr = np.zeros(2) # ehrenfest error = d<U^{-1}p+qU>/dt - i<U^{-1}[H,p+q]U>
+    up2 = e2 = 0.0
+    up3 = e3 = 0.0
     for i in range(N+1):
         time = i*step
         d1, d2 = c.compute_rdm12(c.real, c.imag, eris.nao, eris.nelec)
-        E[i] = compute_energy(d1, d2, eris, time=None)
-        dr, di = c.update_RK(c.real, c.imag, eris, time, step, RK=RK)
+        E[i] = compute_energy(d1, d2, eris, time=None) # <H^0>
+#        E[i] = compute_energy(d1, d2, eris, time) - eris.E0 * td_occd_slow.fac(w, td, time) # <H>
+        mu[i,:] = electric_dipole(d1, eris) 
+        dr, di = c.update_RK(c.real, c.imag, eris, time, step, RK)
         # Ehrenfest err 
         LHS = compute_derivative(c, eris, time)
         RHS = compute_RHS(d1, d2, eris, time)
         ehr += np.array((np.linalg.norm(LHS[0]-RHS[0]),np.linalg.norm(LHS[1]-RHS[1])))
         tr += np.array(trace_err(d1, d2, eris)) 
-        print('time: {:.4f}, EE(mH): {}'.format(time, (E[i]-E[0]).real*1e3))
         # update CI
         c.real += step * dr
         c.imag += step * di
         norm = np.linalg.norm(c.real+1j*c.imag)
         c.real /= norm 
         c.imag /= norm
+# scheme2
+        phase = np.exp(-1j*time*eci)
+        E2[i] = einsum('N,N,N',v2.conj(),v2,eci) # <H^0>
+#        E2[i] += einsum('M,N,MN',np.multiply(v2,phase).conj(),np.multiply(v2,phase),h1) * td_occd_slow.fac(w, td, time) # <H^1>
+        e2 += E2[i] - E[i]
+        dv = _RK(v2, time, step, RK, update2)
+        v2 += dv * step
+        v2 /= np.linalg.norm(v2)
+        v = einsum('N,NIJ->IJ',np.multiply(v2,phase),np.array(cisolver.ci))
+        up2 += np.linalg.norm(c.real+1j*c.imag-v)
+# scheme2
+# scheme3
+        e3 += einsum('N,N,N',v3.conj(),v3,eci) - E[i] # err(<H^0>)
+#        e3 += einsum('N,N,N',v3.conj(),v3,eci) + einsum('M,N,MN',v3.conj(),v3,h1) * td_occd_slow.fac(w, td, time) - E[i] # err(<H>)
+        dv = _RK(v3, time, step, RK, update3)
+        v3 += dv * step
+        v3 /= np.linalg.norm(v3)
+        v = einsum('N,NIJ->IJ',v3,np.array(cisolver.ci))
+        up3 += np.linalg.norm(c.real+1j*c.imag-v)
+# scheme3
+        print('time: {:.4f}, EE(mH): {}'.format(time, (E[i]-E[0]).real*1e3))
+    print('update2 error, ci: {}, EE(mH): {}'.format(up2, abs(e2)*1e3))
+    print('update3 error, ci: {}, EE(mH): {}'.format(up3, abs(e3)*1e3))
     print('trace error: ',tr)
     print('Ehrenfest error: ', ehr)
     print('imaginary part of energy: ', np.linalg.norm(E.imag))
-    return (E - E[0]).real
-
-# not used for now
-#def kernel_rt(mf, c, w, f0, td, tf, step, RK=4, mo_coeff=None):
-#    eris = ERIs(mf, w, f0, td, mo_coeff)
-#    eris.full_h()
-#    c = CI(c)
-#
-#    N = int((tf+step*0.1)/step)
-#    mus = np.zeros((N+1,3),dtype=complex)
-#    Hmu = np.zeros((N+1,3),dtype=complex)
-#    E = np.zeros(N+1,dtype=complex)
-#
-#    d1, d2 = c.compute_rdm(eris.nao, eris.nelec, compute_d2=True)
-#    mus[0,:], _ = electric_dipole(eris, d1, d2=None, time=None) 
-#    E[0] = compute_energy(d1, d2, eris, time=None)
-#    print('FCI energy check : {}'.format(E[0].real+mf.energy_nuc()))
-#    tr = compute_trace(d1, d2, eris)
-#    err = np.zeros(2,dtype=complex)
-#    for i in range(N+1):
-#        time = i * step 
-#        dr, di, LHS = c.update_RK(c.real, c.imag, eris, time, step, RK=RK)
-#        # computing observables
-#        d1, d2 = c.compute_rdm(eris.nao, eris.nelec, compute_d2=True)
-#        mus[i,:] = electric_dipole(d1, eris)
-#        RHS = compute_RHS(d1, d2, eris, time)
-#        err += np.array(np.linalg.norm(LHS[0]-RHS[0]),np.linalg.norm(LHS[1]-RHS[1]))
-#        E[i] = compute_energy(d1, d2, eris, time=None)
-#        tr += compute_trace(d1, d2, eris)
-#        print('time: {:.4f}, E(mH): {}, mu: {}'.format(
-#               time, (E[i]-E[0]).real*1e3, (mus[i,:].real-eris.nucl_dip)*1e3))
-#        # update CI
-#        c.real += step * dr
-#        c.imag += step * di
-#        norm = np.linalg.norm(c.real+1j*c.imag)
-#        c.real /= norm 
-#        c.imag /= norm
-#    print('check error: {}'.format(err))
-#    print('check trace: {}'.format(tr))
-#    print('check E imag: {}'.format(np.linalg.norm(E.imag)))
-#    print('check mu imag: {}'.format(np.linalg.norm(mus.imag)))
-#    return mus.real-eris.nucl_dip, (E - E[0]).real
+    return (E - E[0]).real, (E2-E2[0]).real, (mu - eris.nucl_dip).real
 
 class ERIs():
     def __init__(self, mf, w=None, f0=None, td=None, mo_coeff=None):
@@ -162,20 +197,16 @@ class ERIs():
         eri_ao = mf.mol.intor('int2e_sph')
         self.nao = mf.mol.nao_nr()
         self.nelec = mf.mol.nelec
+        self.mo_coeff = mo_coeff
 
         self.h0 = einsum('uv,up,vq->pq',hao,mo_coeff,mo_coeff)
         eri = einsum('uvxy,up,vr->prxy',eri_ao,mo_coeff,mo_coeff)
         self.eri = einsum('prxy,xq,ys->prqs',eri,mo_coeff,mo_coeff)
 
-        # the number component 
-        # time-indepedent case: reference energy
-        # time-dependent case: nuclear component of dipole
-        self.E0 = mf.energy_elec()[0] 
         if td is not None:
             mu_ao = mf.mol.intor('int1e_r')
-            h1ao = einsum('xuv,x->uv',mu_ao,f0)
-            self.h1 = einsum('uv,up,vq->pq',h1ao,mo_coeff,mo_coeff)
             self.mu = einsum('xuv,up,vq->xpq',mu_ao,mo_coeff,mo_coeff)
+            self.h1 = einsum('xpq,x->pq',self.mu,f0)
             charges = mf.mol.atom_charges()
             coords  = mf.mol.atom_coords()
             self.nucl_dip = einsum('i,ix->x', charges, coords)
@@ -183,16 +214,13 @@ class ERIs():
             self.w = w
             self.f0 = f0
             self.td = td
-            mu_ao = h1ao = None
+            mu_ao = None
         mo_coeff = hao = eri_ao = eri = None
 
     def full_h(self, time=None):
         self.h = self.h0.copy()
-        if time is not None: 
-            if time < self.td:
-                evlp = math.sin(math.pi*time/self.td)**2
-                osc = math.cos(self.w*(time-self.td*0.5))
-                self.h += self.h1 * evlp * osc
+        if time is not None:
+            self.h += self.h1 * td_occd_slow.fac(self.w, self.td, time) 
 
 class CI():
     def __init__(self, c):
@@ -238,15 +266,38 @@ class CI():
         if RK == 1:
             return dr1, di1
         if RK == 2:
-            dr2, di2 = self.update_ci(r+dr1*h*0.5, i+di1*h*0.5, eris, t+h*0.5) 
+            r_ = r+dr1*h*0.5
+            i_ = i+di1*h*0.5
+            norm = np.linalg.norm(r_ + 1j*i_)
+            r_ /= norm
+            i_ /= norm
+            dr2, di2 = self.update_ci(r_, i_, eris, t+h*0.5) 
             return dr2, di2
         if RK == 4: 
-            dr2, di2 = self.update_ci(r+dr1*h*0.5, i+di1*h*0.5, eris, t+h*0.5) 
-            dr3, di3 = self.update_ci(r+dr2*h*0.5, i+di2*h*0.5, eris, t+h*0.5)
-            dr4, di4 = self.update_ci(r+dr3*h, i+di3*h, eris, t+h)
+            r_ = r+dr1*h*0.5
+            i_ = i+di1*h*0.5
+            norm = np.linalg.norm(r_ + 1j*i_)
+            r_ /= norm
+            i_ /= norm
+            dr2, di2 = self.update_ci(r_, i_, eris, t+h*0.5) 
+
+            r_ = r+dr2*h*0.5
+            i_ = i+di2*h*0.5
+            norm = np.linalg.norm(r_ + 1j*i_)
+            r_ /= norm
+            i_ /= norm
+            dr3, di3 = self.update_ci(r_, i_, eris, t+h*0.5)
+
+            r_ = r+dr3*h
+            i_ = i+di3*h
+            norm = np.linalg.norm(r_ + 1j*i_)
+            r_ /= norm
+            i_ /= norm
+            dr4, di4 = self.update_ci(r_, i_, eris, t+h)
+
             dr = (dr1+2.0*dr2+2.0*dr3+dr4)/6.0
             di = (di1+2.0*di2+2.0*di3+di4)/6.0
-            dr1 = dr2 = dr3 = dr4 = di1 = di2 = di3 = di4 = None
+            dr1 = dr2 = dr3 = dr4 = di1 = di2 = di3 = di4 = r_ = i_ = None
             return dr, di
 
 def compute_derivative(c, eris, time):
@@ -266,7 +317,7 @@ def compute_derivative(c, eris, time):
     db += db.T.conj()
     # term 2
     d1 = c.compute_rdm1(c.real, c.imag, norb, nelec)
-    fac = einsum('IJ,IJ',dr-1j*di,c.real+1j*c.imag)
+    fac  = einsum('IJ,IJ',dr-1j*di,c.real+1j*c.imag)
     fac += fac.conj()
     da -= fac*d1[0]
     db -= fac*d1[1]
