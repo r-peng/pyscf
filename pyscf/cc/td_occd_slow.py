@@ -1,6 +1,7 @@
 import numpy as np
 import scipy, math
-from pyscf import lib, ao2mo
+from pyscf import lib, ao2mo, cc
+from pyscf.cc import td_roccd_utils as utils
 einsum = lib.einsum
 
 def sort1(tup):
@@ -534,6 +535,7 @@ def kernel_rt(mf, t, l, C, w, f0, td, tf, step, RK=4, orb=True):
     nmo = C.shape[0]
     N = int((tf+step*0.1)/step)
 
+    d1_old = rotate1(d1, C.T.conj()) 
     E = np.zeros(N+1,dtype=complex) 
     mu = np.zeros((N+1,3),dtype=complex)  
     tr = np.zeros(2) # trace error
@@ -558,17 +560,26 @@ def kernel_rt(mf, t, l, C, w, f0, td, tf, step, RK=4, orb=True):
         tr += np.array(trace_err(d1, d2, no))
         ec += np.array(energy_err(t, l, d1, d2, eris, time))
         ehr += ehrenfest_err(t, l, C, d1, d2, eris, time)
-        print('time: {:.4f}, EE(mH): {}, X: {}'.format(
-              time, (E[i] - E[0]).real*1e3, np.linalg.norm(X)))
         # update 
         t += step * dt
         l += step * dl
         C = np.dot(scipy.linalg.expm(-step*X), C)
+
+        eris.rotate(C)
+        d1_new, d2_new = compute_rdm12(t, l)
+        _, F = compute_X(d1_new, d2_new, eris, time, no) # F_{qp} = i<[U^{-1}HU,p+q]>
+        d1_new = rotate1(d1_new, C.T.conj())
+        F = rotate1(F, C.T.conj())
+        err = np.linalg.norm((d1_new-d1_old)/step-F)
+        d1_old = d1_new.copy()
+        print('time: {:.4f}, EE(mH): {}, X: {}, err: {}'.format(
+              time, (E[i] - E[0]).real*1e3, np.linalg.norm(X)**2/2, err**2/2*1e6))
     print('trace error: ',tr)
     print('Ehrenfest error: ', ehr)
     print('energy conservation error: ', ec)
     print('imaginary part of energy: ', np.linalg.norm(E.imag))
-    return (E - E[0]).real, (mu - eris.nucl_dip).real
+#    return (E - E[0]).real, (mu - eris.nucl_dip).real
+    return d1_new, F, C, X, t, l
 
 
 class ERIs:
@@ -613,28 +624,11 @@ class ERIs:
         eri = eri_ab = eri_aa = None
 
     def rotate(self, C):
-        # compute tnsors of U^{-1}HU
+        # compute tensors of U^{-1}HU
         self.h0 = rotate1(self.h0_, C)
         self.h1 = rotate1(self.h1_, C)
         self.eri = rotate2(self.eri_, C)
 
     def full_h(self, time=None):
-        self.h = full_h(self.h0, self.h1, self.w, self.td, time) 
+        self.h = utils.full_h(self.h0, self.h1, self.w, self.td, time) 
                
-def full_h(h0, h1, w=None, td=None, time=None): 
-    # computes H = H0 + H1(t)
-    h = h0.copy()
-    if time is not None:
-        h += h1 * fac(w, td, time) 
-    return h
-
-def fac(w, td, time=None):
-    if time > td:
-        return 0.0 
-    else:
-        evlp = math.sin(math.pi*time/td)**2
-#        evlp = 1.0
-#        osc = math.sin(w*time)
-        osc = 1.0
-        return evlp * osc
-
