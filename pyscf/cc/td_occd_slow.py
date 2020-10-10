@@ -103,14 +103,16 @@ def compute_res_l(t, l, eris):
     dl += tmp.copy()
     return dl
 
-def update_amps(t, l, eris, time=None):
+def update_amps(t, l, eris, time=None, X=None):
     # res_t_{\mu} = <\mu|\bar{H}|0>
     # res_l_{\mu} = <0|(1+L)[\bar{H},\mu+]|0>
+    X = np.zeros_like(eris.h, dtype=complex) if X is None else X
+
     eris.full_h(time)
 
     no = t.shape[3]
     eri = eris.eri.copy()
-    f  = eris.h.copy()
+    f  = eris.h.copy() - 1j*X
     f += einsum('piqi->pq',eri[:,:no,:,:no])
 
     Foo  = f[:no,:no].copy()
@@ -372,7 +374,7 @@ def compute_rdm12(t, l, dt=None, dl=None, order=0):
     doo = dvv = doooo = doovv = dvvoo = dovvo = dovov = dvvvv = None
     return d1, d2
 
-def compute_X(d1, d2, eris, time, no):
+def compute_X(d1, d2, eris, time, no, rand=False):
     # A_{uv,pq}(-iX)_{pq} = F_{uv}
     # A_{uv,pq} = <[u+v,p+q]>
     # F_{uv} = <[U^{-1}HU,u+v]>
@@ -398,46 +400,55 @@ def compute_X(d1, d2, eris, time, no):
     X = np.zeros((nmo,nmo),dtype=complex)
     X[:no,no:] = Xvo.T.conj()
     X[no:,:no] = Xvo.copy()
+#
+    if rand:
+    # adding arbitrary oo/vv rotation
+    # analytical errors should vanish
+    # numerical error should to decrease in O(h)
+        no_, nv_ = int(no/2), int(nv/2)
+        Xoo = np.zeros((no_,no_),dtype=complex)
+        Xoo.real = np.random.rand(no_,no_)
+        Xoo.imag = np.random.rand(no_,no_)
+        Xoo += Xoo.T.conj()
+        Xvv = np.zeros((nv_,nv_),dtype=complex)
+        Xvv.real = np.random.rand(nv_,nv_)
+        Xvv.imag = np.random.rand(nv_,nv_)
+        Xvv += Xvv.T.conj()
+        X[:no,:no] = sort1((Xoo,Xoo))
+        X[no:,no:] = sort1((Xvv,Xvv))
+#
     return 1j*X, 1j*F.T
 
-def ehrenfest_err(t, l, C, d1, d2, eris, time):
+def ehrenfest_err(t, l, C, d1, dt, dl, X, F):
     # analytical 1st time derivative of <U^{-1}p+qU>
-    no = l.shape[0]
-    X, F = compute_X(d1, d2, eris, time, no)
-
     # amplitude component
-    dt, dl = update_amps(t, l, eris, time)
     d11 = compute_rdm1(t, l, dt, dl, order=1)
     d11 = rotate1(d11, C.T.conj())
     dt = dl = None
-
     # orbital component
     dC = - np.dot(X,C)
     tmp  = einsum('sr,rp,sq->qp',d1,dC,C.conj())
     tmp += einsum('sr,rp,sq->qp',d1,C,dC.conj())
     return np.linalg.norm(d11 + tmp - rotate1(F, C.T.conj()))
 
-def energy_err(t, l, d1, d2, eris, time):
+def energy_err(t, l, d1, d2, dt, dl, X, eris, time):
     # analytical nonconservation error from derivative of wavefunction
     # err = d<U^{-1}HU>/dt - <U^{-1}\dot{H}U>
     #     = <\dot{l}|U^{-1}HU|r> + <l|U^{-1}HU|\dot{r}> # amplitude component 
     #     + <l|\dot{U^{-1}}HU|r> + <l|U^{-1}H\dot{U}|r> # orbital component
-    # each component should identically vanish
 
     # amplitude component
-    dt, dl = update_amps(t, l, eris, time)
     d11, d21 = compute_rdm12(t, l, dt, dl, order=1)
-    err_amp = compute_energy(d11, d21, eris, time) 
+    err = compute_energy(d11, d21, eris, time) 
     # orbital component
     no = l.shape[0]
-    X, _ = compute_X(d1, d2, eris, time, no)
     tmp1  = einsum('ur,rv->uv',eris.h,X)
     tmp1 -= einsum('ur,rv->uv',X,eris.h)
     tmp2  = 0.5 * einsum('uvxw,wy->uvxy',eris.eri,X)
     tmp2 -= 0.5 * einsum('uwxy,vw->uvxy',eris.eri,X)
-    err_orb  = einsum('uv,vu',tmp1,d1)
-    err_orb += einsum('uvxy,xyuv',tmp2,d2)
-    return abs(err_amp), abs(err_orb)
+    err += einsum('uv,vu',tmp1,d1)
+    err += einsum('uvxy,xyuv',tmp2,d2)
+    return abs(err)
 
 def compute_energy(d1, d2, eris, time=None):
     eris.full_h(time)
@@ -521,9 +532,11 @@ def rotate2(A, C):
     A = einsum('pqrs,up,vq->uvrs',A,C,C)
     return einsum('uvrs,xr,ys->uvxy',A,C.conj(),C.conj())
 
-def kernel_rt(mf, t, l, C, w, f0, td, tf, step, RK=4, orb=True):
+def kernel_rt(mf, t, l, w, f0, td, tf, step, rand=False):
+    nmo = mf.mol.nao_nr()
+    C = np.eye(nmo*2,dtype=complex)
+
     eris = ERIs(mf, w, f0, td) # in HF basis
-    C = np.array(C, dtype=complex)
     t = np.array(t, dtype=complex)
     l = np.array(l, dtype=complex)
     eris.rotate(C)
@@ -532,53 +545,43 @@ def kernel_rt(mf, t, l, C, w, f0, td, tf, step, RK=4, orb=True):
     print('check initial energy: {}'.format(e.real+mf.energy_nuc())) 
 
     no, _, nv, _ = l.shape
-    nmo = C.shape[0]
     N = int((tf+step*0.1)/step)
 
     d1_old = rotate1(d1, C.T.conj()) 
     E = np.zeros(N+1,dtype=complex) 
     mu = np.zeros((N+1,3),dtype=complex)  
     tr = np.zeros(2) # trace error
-    ec = np.zeros(2) # energy conservation error 
+    ec = 0.0 # energy conservation error 
     ehr = 0.0 # ehrenfest error = d<U^{-1}p+qU>/dt - i<U^{-1}[H,p+q]U>
     for i in range(N+1):
         time = i * step
-# RK4 scheme 1 
-#        eris.rotate(C)
-#        d1, d2 = compute_rdm12(t, l)
-#        dt, dl = update_RK(t, l, eris, time, step, RK)
-#        X, F = compute_X(d1, d2, eris, time, no) # F_{qp} = i<[U^{-1}HU,p+q]>
-# RK4 scheme 1 
-# RK4 scheme 2 
-        dt, dl, X, d1, d2 = update_RK_(t, l, C, eris, time, step, RK)
+# RK1, w/ random Xoo, Xvv
         eris.rotate(C)
-# RK4 scheme 2 
+        d1, d2 = compute_rdm12(t, l)
+        X, F = compute_X(d1, d2, eris, time, no, rand) # F_{qp} = i<[U^{-1}HU,p+q]>
+        dt, dl = update_amps(t, l, eris, time, X)
         E[i] = compute_energy(d1, d2, eris, time=None) # <U^{-1}H0U>
         mu[i,:] = einsum('qp,xpq->x',rotate1(d1,C.T.conj()),eris.mu_) 
-        X = X if orb else np.zeros_like(X, dtype=complex)
         # accumulate analytical error
         tr += np.array(trace_err(d1, d2, no))
-        ec += np.array(energy_err(t, l, d1, d2, eris, time))
-        ehr += ehrenfest_err(t, l, C, d1, d2, eris, time)
+        ec += energy_err(t, l, d1, d2, dt, dl, X, eris, time)
+        ehr += ehrenfest_err(t, l, C, d1, dt, dl, X, F)
         # update 
         t += step * dt
         l += step * dl
         C = np.dot(scipy.linalg.expm(-step*X), C)
 
-        eris.rotate(C)
         d1_new, d2_new = compute_rdm12(t, l)
-        _, F = compute_X(d1_new, d2_new, eris, time, no) # F_{qp} = i<[U^{-1}HU,p+q]>
         d1_new = rotate1(d1_new, C.T.conj())
         F = rotate1(F, C.T.conj())
         err = np.linalg.norm((d1_new-d1_old)/step-F)
         d1_old = d1_new.copy()
         print('time: {:.4f}, EE(mH): {}, X: {}, err: {}'.format(
-              time, (E[i] - E[0]).real*1e3, np.linalg.norm(X)**2/2, err**2/2*1e6))
+              time, (E[i] - E[0]).real*1e3, np.linalg.norm(X)**2/2, err))
     print('trace error: ',tr)
     print('Ehrenfest error: ', ehr)
     print('energy conservation error: ', ec)
     print('imaginary part of energy: ', np.linalg.norm(E.imag))
-#    return (E - E[0]).real, (mu - eris.nucl_dip).real
     return d1_new, F, C, X, t, l
 
 

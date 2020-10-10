@@ -14,6 +14,18 @@ einsum = lib.einsum
 #    d2_ = None
 #    return err1, err2
 
+def compute_X(d1, d2, eris, time=None):
+    Aovvo = utils.compute_Aovvo(d1)
+    _, fov, fvo, _ = utils.compute_comm(d1, d2, eris, time, full=False) 
+    no, nv = fov.shape
+    Bov = fvo.T - fov.conj()
+    Bov = Bov.reshape(no*nv)
+    Aovvo = Aovvo.reshape(no*nv,no*nv)
+    Xvo = np.dot(np.linalg.inv(Aovvo),Bov)
+    Xvo = Xvo.reshape(nv,no)
+    return 1j*np.block([[np.zeros((no,no)),Xvo.T.conj()],
+                        [Xvo,np.zeros((nv,nv))]])
+
 def kernel(mf, t, l, w, f0, td, tf, step):
     no, _, nv, _ = l.shape
     nmo = no + nv
@@ -35,8 +47,8 @@ def kernel(mf, t, l, w, f0, td, tf, step):
         time = i * step
         eris.rotate(C)
         d1, d2 = utils.compute_rdm12(t, l)
+        X = compute_X(d1, d2, eris, time)
         dt, dl = utils.update_amps(t, l, eris, time)
-        X, _ = utils.compute_X(d1, d2, eris, time) # F_{qp} = <[U^{-1}HU,p+q]>
         E[i] = utils.compute_energy(d1, d2, eris, time=None) # <U^{-1}H0U>
 #        mu[i,:] = einsum('qp,xpq->x',utils.rotate1(d1,C.T.conj()),eris.mu_) 
         # update 
@@ -44,18 +56,18 @@ def kernel(mf, t, l, w, f0, td, tf, step):
         l += step * dl
         C = np.dot(scipy.linalg.expm(-step*X), C)
         # Ehrenfest error
-        eris.rotate(C)
         d1_new, d2_new = utils.compute_rdm12(t, l)
-        _, B = utils.compute_X(d1_new, d2_new, eris, time) # F_{qp} = <[U^{-1}HU,p+q]>
+        B = utils.compute_comm(d1_new, d2_new, eris, time) # F_{qp} = <[U^{-1}HU,p+q]>
         d1_new = np.block([[d1_new[0],np.zeros((no,nv))],
                            [np.zeros((nv,no)),d1_new[1]]])
         d1_new = utils.rotate1(d1_new, C.T.conj())
-        B = np.block([[B[0],B[1]],[-B[1].T.conj(),B[2]]])
+        B = np.block([[B[0],B[1]],[B[2],B[3]]])
+        B -= B.T.conj()
         B = utils.rotate1(B, C.T.conj())
         err = np.linalg.norm((d1_new-d1_old)/step-1j*B)
         d1_old = d1_new.copy()
         print('time: {:.4f}, EE(mH): {}, X: {}, err: {}'.format(
-              time, (E[i] - E[0]).real*1e3, np.linalg.norm(X)**2, err**2*1e6))
+              time, (E[i] - E[0]).real*1e3, np.linalg.norm(X)**2, err))
 #    print('trace error: ',tr)
 #    print('energy conservation error: ', ec)
     print('imaginary part of energy: ', np.linalg.norm(E.imag))

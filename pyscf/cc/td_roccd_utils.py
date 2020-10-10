@@ -3,7 +3,7 @@ import math
 from pyscf import lib
 einsum = lib.einsum
 
-def update_amps(t, l, eris, time=None):
+def update_amps(t, l, eris, time=None, X=None):
     eris.make_tensors(time)
     oovv = eris.oovv
     oooo = eris.oooo
@@ -15,10 +15,17 @@ def update_amps(t, l, eris, time=None):
     t_ = t - t.transpose(0,1,3,2)
     l_ = l - l.transpose(0,1,3,2)
 
-    Foo  = eris.foo.copy()
+    if X is None:
+        no, nv = eris.hov.shape
+        Xoo = np.zeros((no,no),dtype=complex)
+        Xvv = np.zeros((nv,nv),dtype=complex)
+    else:
+        Xoo, Xvv = X
+
+    Foo  = eris.foo.copy() - 1j*Xoo
     Foo += 0.5 * einsum('klcd,cdjl->kj',oovv_,t_)
     Foo +=       einsum('klcd,cdjl->kj',oovv ,t )
-    Fvv  = eris.fvv.copy()
+    Fvv  = eris.fvv.copy() - 1j*Xvv
     Fvv -= 0.5 * einsum('klcd,bdkl->bc',oovv_,t_)
     Fvv -=       einsum('klcd,bdkl->bc',oovv ,t )
 
@@ -156,7 +163,62 @@ def compute_rdm12(t, l):
     dvvvv *= 0.5
     return (doo, dvv), (doooo, doovv, dovvo, dovov, dvvvv)
 
-def compute_X(d1, d2, eris, time=None):
+#def compute_X(d1, d2, eris, time=None):
+#    doo, dvv = d1 
+#    doooo, doovv, dovvo, dovov, dvvvv = d2
+#    doooo_ = doooo - doooo.transpose(0,1,3,2)
+#    doovv_ = doovv - doovv.transpose(0,1,3,2)
+#    dovvo_ = dovvo - dovov.transpose(0,1,3,2)
+#    dvvvv_ = dvvvv - dvvvv.transpose(0,1,3,2)
+#
+#    eris.make_tensors(time)
+#    ovvv = eris.ovvv
+#    vovv = eris.vovv
+#    oovo = eris.oovo
+#    ooov = eris.ooov
+#    ovvv_ = ovvv - vovv.transpose(1,0,2,3)
+#    oovo_ = oovo - ooov.transpose(0,1,3,2)
+#
+#    fvo  = einsum('ab,ib->ai',dvv,eris.hov.conj())
+#    fvo += 0.5 * einsum('abcd,ibcd->ai',dvvvv_,ovvv_.conj())
+#    fvo += 0.5 * einsum('lkba,lkbi->ai',doovv_.conj(),oovo_)
+#    fvo +=       einsum('jabk,jibk->ai',dovvo_,oovo_.conj())
+#    fvo += einsum('abcd,ibcd->ai',dvvvv,ovvv.conj())
+#    fvo += einsum('lkba,lkbi->ai',doovv.conj(),oovo)
+#    fvo += einsum('jabk,jibk->ai',dovvo,oovo.conj())
+#    fvo += einsum('jakb,jikb->ai',dovov,ooov.conj())
+#
+#    fov  = einsum('ij,ja->ia',doo,eris.hov)
+#    fov += 0.5 * einsum('ijkl,klaj->ia',doooo_,oovo_)
+#    fov += 0.5 * einsum('jidc,jadc->ia',doovv_,ovvv_.conj())
+#    fov +=       einsum('ibcj,jcba->ia',dovvo_,ovvv_)
+#    fov += einsum('ijkl,klaj->ia',doooo,oovo)
+#    fov += einsum('jidc,jadc->ia',doovv,ovvv.conj())
+#    fov += einsum('ibcj,jcba->ia',dovvo,ovvv)
+#    fov += einsum('ibjc,cjba->ia',dovov,vovv)
+#
+#    Bov = fvo.T - fov.conj()
+#    no, nv = fov.shape
+#    Aovvo  = einsum('ab,ji->iabj',np.eye(nv),doo)
+#    Aovvo -= einsum('ij,ab->iabj',np.eye(no),dvv)
+#    
+#    Bov = Bov.reshape(no*nv)
+#    Aovvo = Aovvo.reshape(no*nv,no*nv)
+#    Xvo = np.dot(np.linalg.inv(Aovvo),Bov)
+#    Xvo = Xvo.reshape(nv,no)
+#
+#    doooo_ = doovv_ = dovvo_ = dvvvv_ = None
+#    ovvv_ = oovo_ = Aovvo = None
+#    return Xvo
+
+def compute_Aovvo(d1):
+    doo, dvv = d1
+    no, nv = doo.shape[0], dvv.shape[0]
+    Aovvo  = einsum('ab,ji->iabj',np.eye(nv),doo)
+    Aovvo -= einsum('ij,ab->iabj',np.eye(no),dvv)
+    return Aovvo
+
+def compute_comm(d1, d2, eris, time=None, full=True):
     doo, dvv = d1 
     doooo, doovv, dovvo, dovov, dvvvv =  d2
     doooo_ = doooo - doooo.transpose(0,1,3,2)
@@ -190,57 +252,40 @@ def compute_X(d1, d2, eris, time=None):
     fov += einsum('ibcj,jcba->ia',dovvo,ovvv)
     fov += einsum('ibjc,cjba->ia',dovov,vovv)
 
-    Bov = fvo.T - fov.conj()
-    no, nv = fov.shape
-    Aovvo  = einsum('ab,ji->iabj',np.eye(nv),doo)
-    Aovvo -= einsum('ij,ab->iabj',np.eye(no),dvv)
-    
-    Bov = Bov.reshape(no*nv)
-    Aovvo = Aovvo.reshape(no*nv,no*nv)
-    Xvo = np.dot(np.linalg.inv(Aovvo),Bov)
-    Xvo = Xvo.reshape(nv,no)
+    foo = fvv = None
+    if full:
+        oovv = eris.oovv
+        oooo = eris.oooo
+        vvvv = eris.vvvv
+        ovvo = eris.ovvo
+        ovov = eris.ovov
+        oooo_ = oooo - oooo.transpose(0,1,3,2)
+        oovv_ = oovv - oovv.transpose(0,1,3,2)
+        ovvo_ = ovvo - ovov.transpose(0,1,3,2)
+        vvvv_ = vvvv - vvvv.transpose(0,1,3,2)
 
-    nmo = no + nv
-    X = np.zeros((nmo,nmo),dtype=complex)
-    X[:no,no:] = Xvo.T.conj()
-    X[no:,:no] = Xvo.copy()
-
-    oovv = eris.oovv
-    oooo = eris.oooo
-    vvvv = eris.vvvv
-    ovvo = eris.ovvo
-    ovov = eris.ovov
-    oooo_ = oooo - oooo.transpose(0,1,3,2)
-    oovv_ = oovv - oovv.transpose(0,1,3,2)
-    ovvo_ = ovvo - ovov.transpose(0,1,3,2)
-    vvvv_ = vvvv - vvvv.transpose(0,1,3,2)
-
-    fvv  = einsum('ac,cb->ab',dvv,eris.hvv)
-    fvv += 0.5 * einsum('aecd,cdbe->ab',dvvvv_,vvvv_)
-    fvv += 0.5 * einsum('ijae,ijbe->ab',doovv_.conj(),oovv_)
-    fvv +=       einsum('iacj,jcbi->ab',dovvo_,ovvo_)
-    fvv += einsum('aecd,cdbe->ab',dvvvv,vvvv)
-    fvv += einsum('ijae,ijbe->ab',doovv.conj(),oovv)
-    fvv += einsum('iacj,jcbi->ab',dovvo,ovvo)
-    fvv += einsum('iajc,jcib->ab',dovov,ovov)
-    
-    foo  = einsum('ik,kj->ij',doo,eris.hoo)
-    foo += 0.5 * einsum('imkl,kljm->ij',doooo_,oooo_)
-    foo += 0.5 * einsum('imab,jmab->ij',doovv_,oovv_.conj())
-    foo +=       einsum('iabk,kbaj->ij',dovvo_,ovvo_)
-    foo += einsum('imkl,kljm->ij',doooo,oooo)
-    foo += einsum('imab,jmab->ij',doovv,oovv.conj())
-    foo += einsum('iabk,kbaj->ij',dovvo,ovvo)
-    foo += einsum('iakb,kbja->ij',dovov,ovov)
-
-    # fvu = <[H,u^+v]>
-    fov -= fvo.T.conj()
-    foo -= foo.T.conj()
-    fvv -= fvv.T.conj()
+        fvv  = einsum('ac,cb->ab',dvv,eris.hvv)
+        fvv += 0.5 * einsum('aecd,cdbe->ab',dvvvv_,vvvv_)
+        fvv += 0.5 * einsum('ijae,ijbe->ab',doovv_.conj(),oovv_)
+        fvv +=       einsum('iacj,jcbi->ab',dovvo_,ovvo_)
+        fvv += einsum('aecd,cdbe->ab',dvvvv,vvvv)
+        fvv += einsum('ijae,ijbe->ab',doovv.conj(),oovv)
+        fvv += einsum('iacj,jcbi->ab',dovvo,ovvo)
+        fvv += einsum('iajc,jcib->ab',dovov,ovov)
+        
+        foo  = einsum('ik,kj->ij',doo,eris.hoo)
+        foo += 0.5 * einsum('imkl,kljm->ij',doooo_,oooo_)
+        foo += 0.5 * einsum('imab,jmab->ij',doovv_,oovv_.conj())
+        foo +=       einsum('iabk,kbaj->ij',dovvo_,ovvo_)
+        foo += einsum('imkl,kljm->ij',doooo,oooo)
+        foo += einsum('imab,jmab->ij',doovv,oovv.conj())
+        foo += einsum('iabk,kbaj->ij',dovvo,ovvo)
+        foo += einsum('iakb,kbja->ij',dovov,ovov)
+        oooo_ = oovv_ = ovvo_ = vvvv_ = None
 
     doooo_ = doovv_ = dovvo_ = dvvvv_ = None
-    ovvv_ = oovo_ = oooo_ = oovv_ = ovvo_ = vvvv_ = None
-    return 1j*X, (foo,fov,fvv)
+    ovvv_ = oovo_ = None
+    return foo,fov,fvo,fvv
 
 def compute_energy(d1, d2, eris, time=None):
     eris.make_tensors(time)
