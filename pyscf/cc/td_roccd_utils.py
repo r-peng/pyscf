@@ -16,10 +16,9 @@ def update_amps(t, l, eris, time=None, X=None):
     l_ = l - l.transpose(0,1,3,2)
 
     if X is None:
-        no, nv = eris.hov.shape
-        Xoo = np.zeros((no,no),dtype=complex)
-        Xvv = np.zeros((nv,nv),dtype=complex)
-    else:
+        Xoo = np.zeros_like(eris.foo)
+        Xvv = np.zeros_like(eris.fvv)
+    else: 
         Xoo, Xvv = X
 
     Foo  = eris.foo.copy() - 1j*Xoo
@@ -94,6 +93,23 @@ def compute_rho1(t, l): # normal ordered, asymmetric
     doo *= - 1.0
     return doo, dvv
 
+def compute_drho1(t, l, dt, dl):
+    t_ = t - t.transpose(0,1,3,2)
+    l_ = l - l.transpose(0,1,3,2)
+    dt_ = dt - dt.transpose(0,1,3,2)
+    dl_ = dl - dl.transpose(0,1,3,2)
+    dvv  = 0.5 * einsum('ikac,bcik->ba',dl_,t_)
+    dvv +=       einsum('ikac,bcik->ba',dl ,t )
+    dvv += 0.5 * einsum('ikac,bcik->ba',l_,dt_)
+    dvv +=       einsum('ikac,bcik->ba',l ,dt )
+    doo  = 0.5 * einsum('jkac,acik->ji',dl_,t_)
+    doo +=       einsum('jkac,acik->ji',dl ,t )
+    doo += 0.5 * einsum('jkac,acik->ji',l_,dt_)
+    doo +=       einsum('jkac,acik->ji',l ,dt )
+    doo *= - 1.0
+    t_ = l_ = dt_ = dl_ = None
+    return doo, dvv
+
 def compute_rho12(t, l): # normal ordered, asymmetric
     t_ = t - t.transpose(0,1,3,2)
     l_ = l - l.transpose(0,1,3,2)
@@ -123,10 +139,13 @@ def compute_rho12(t, l): # normal ordered, asymmetric
     t_ = l_ = None
     return (doo, dvv), (doooo, l.copy(), dvvoo, dovvo, dovov, dvvvv)
 
-def compute_rdm1(t, l):
-    doo, dvv = compute_rho1(t, l)
-    no = doo.shape[0]
-    doo += np.eye(no)
+def compute_rdm1(t, l, dt=None, dl=None):
+    if dt is None:
+        doo, dvv = compute_rho1(t, l)
+        no = doo.shape[0]
+        doo += np.eye(no)
+    else:
+        doo, dvv = compute_drho1(t, l, dt, dl)
 
     doo += doo.T.conj()
     dvv += dvv.T.conj()
@@ -163,53 +182,20 @@ def compute_rdm12(t, l):
     dvvvv *= 0.5
     return (doo, dvv), (doooo, doovv, dovvo, dovov, dvvvv)
 
-#def compute_X(d1, d2, eris, time=None):
-#    doo, dvv = d1 
-#    doooo, doovv, dovvo, dovov, dvvvv = d2
-#    doooo_ = doooo - doooo.transpose(0,1,3,2)
-#    doovv_ = doovv - doovv.transpose(0,1,3,2)
-#    dovvo_ = dovvo - dovov.transpose(0,1,3,2)
-#    dvvvv_ = dvvvv - dvvvv.transpose(0,1,3,2)
-#
-#    eris.make_tensors(time)
-#    ovvv = eris.ovvv
-#    vovv = eris.vovv
-#    oovo = eris.oovo
-#    ooov = eris.ooov
-#    ovvv_ = ovvv - vovv.transpose(1,0,2,3)
-#    oovo_ = oovo - ooov.transpose(0,1,3,2)
-#
-#    fvo  = einsum('ab,ib->ai',dvv,eris.hov.conj())
-#    fvo += 0.5 * einsum('abcd,ibcd->ai',dvvvv_,ovvv_.conj())
-#    fvo += 0.5 * einsum('lkba,lkbi->ai',doovv_.conj(),oovo_)
-#    fvo +=       einsum('jabk,jibk->ai',dovvo_,oovo_.conj())
-#    fvo += einsum('abcd,ibcd->ai',dvvvv,ovvv.conj())
-#    fvo += einsum('lkba,lkbi->ai',doovv.conj(),oovo)
-#    fvo += einsum('jabk,jibk->ai',dovvo,oovo.conj())
-#    fvo += einsum('jakb,jikb->ai',dovov,ooov.conj())
-#
-#    fov  = einsum('ij,ja->ia',doo,eris.hov)
-#    fov += 0.5 * einsum('ijkl,klaj->ia',doooo_,oovo_)
-#    fov += 0.5 * einsum('jidc,jadc->ia',doovv_,ovvv_.conj())
-#    fov +=       einsum('ibcj,jcba->ia',dovvo_,ovvv_)
-#    fov += einsum('ijkl,klaj->ia',doooo,oovo)
-#    fov += einsum('jidc,jadc->ia',doovv,ovvv.conj())
-#    fov += einsum('ibcj,jcba->ia',dovvo,ovvv)
-#    fov += einsum('ibjc,cjba->ia',dovov,vovv)
-#
-#    Bov = fvo.T - fov.conj()
-#    no, nv = fov.shape
-#    Aovvo  = einsum('ab,ji->iabj',np.eye(nv),doo)
-#    Aovvo -= einsum('ij,ab->iabj',np.eye(no),dvv)
-#    
-#    Bov = Bov.reshape(no*nv)
-#    Aovvo = Aovvo.reshape(no*nv,no*nv)
-#    Xvo = np.dot(np.linalg.inv(Aovvo),Bov)
-#    Xvo = Xvo.reshape(nv,no)
-#
-#    doooo_ = doovv_ = dovvo_ = dvvvv_ = None
-#    ovvv_ = oovo_ = Aovvo = None
-#    return Xvo
+def compute_X(d1, d2, eris, time=None):
+    Aovvo = compute_Aovvo(d1)
+    _, fov, fvo, _ = compute_comm(d1, d2, eris, time, full=False)  
+    Bov = fvo.T - fov.conj()
+    no, nv = fov.shape
+    
+    Bov = Bov.reshape(no*nv)
+    Aovvo = Aovvo.reshape(no*nv,no*nv)
+    Rvo = np.dot(np.linalg.inv(Aovvo),Bov)
+    Rvo = Rvo.reshape(nv,no)
+    R = np.block([[np.zeros((no,no)),Rvo.T.conj()],
+                   [Rvo,np.zeros((nv,nv))]])
+    Bov = Aovvo = fvo = fvo = None
+    return 1j*R, None
 
 def compute_Aovvo(d1):
     doo, dvv = d1
@@ -287,6 +273,14 @@ def compute_comm(d1, d2, eris, time=None, full=True):
     ovvv_ = oovo_ = None
     return foo,fov,fvo,fvv
 
+def compute_der1(d1, dd1, C, X):
+    # analytical 1st time derivative of <U^{-1}p+qU>
+    dd1 = rotate1(dd1, C.T.conj())
+    dC = - np.dot(X, C)
+    tmp  = einsum('sr,rp,sq->qp',d1,dC,C.conj())
+    tmp += einsum('sr,rp,sq->qp',d1,C,dC.conj())
+    return dd1 + tmp
+
 def compute_energy(d1, d2, eris, time=None):
     eris.make_tensors(time)
     doo, dvv = d1 
@@ -331,17 +325,16 @@ def rotate1(h, C):
     return einsum('up,vq,...pq->...uv',C,C.conj(),h) 
 def rotate2(eri, C):
     eri = einsum('up,vq,pqrs->uvrs',C,C,eri)
-    eri = einsum('xr,ys,uvrs->uvxy',C.conj(),C.conj(),eri)
-    return eri
+    return einsum('xr,ys,uvrs->uvxy',C.conj(),C.conj(),eri)
 
 def fac(w, td, time):
     if time > td:
         return 0.0 
     else:
-        evlp = math.sin(math.pi*time/td)**2
-        osc = 1.0
-#        evlp = 1.0
-#        osc = math.sin(w*time)
+#        evlp = math.sin(math.pi*time/td)**2
+#        osc = 1.0
+        evlp = 1.0
+        osc = math.sin(w*time)
         return evlp * osc
 
 def full_h(h0, h1, w=None, td=None, time=None): 

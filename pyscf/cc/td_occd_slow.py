@@ -577,7 +577,7 @@ def kernel_rt(mf, t, l, w, f0, td, tf, step, rand=False):
         err = np.linalg.norm((d1_new-d1_old)/step-F)
         d1_old = d1_new.copy()
         print('time: {:.4f}, EE(mH): {}, X: {}, err: {}'.format(
-              time, (E[i] - E[0]).real*1e3, np.linalg.norm(X)**2/2, err))
+              time, (E[i] - E[0]).real*1e3, np.linalg.norm(X), err))
     print('trace error: ',tr)
     print('Ehrenfest error: ', ehr)
     print('energy conservation error: ', ec)
