@@ -22,17 +22,17 @@ def compute_phys1(d1, eris):
     d1_ += einsum('pq,p,q->pq',d1[no:,no:],fd_,fd_) 
     return d1_
 
-def kernel(mf, t, l, w, f0, td, tf, beta, mu, step, basis='b'):
+def kernel(mf, t, l, w, f0, td, tf, beta, mu, step, basis='b', picture='I'):
     no, _, nv, _ = l.shape
     nmo = no + nv
     N = int((tf+step*0.1)/step)
     if basis == 'b': # for Bogoliubov rotation
         C = np.eye(nmo, dtype=complex)
-        eris = ERIs_b(mf, w, f0, td, beta, mu)
+        eris = ERIs_b(mf, w, f0, td, beta, mu, picture)
         compute_X = utils.compute_X
     else: # for physical rotation
         C = np.eye(no, dtype=complex)
-        eris = ERIs_p(mf, w, f0, td, beta, mu)
+        eris = ERIs_p(mf, w, f0, td, beta, mu, picture)
         compute_X = compute_X_
 
     t = np.array(t, dtype=complex)
@@ -189,14 +189,17 @@ def make_R(R_, nmo):
     return R
 
 class ERIs_b:
-    def __init__(self, mf, w=0.0, f0=np.zeros(3), td=0.0, beta=0.0, mu=0.0):
+    def __init__(self, mf, w=0.0, f0=np.zeros(3), td=0.0, 
+                 beta=0.0, mu=0.0, picture='I'):
         self.no = mf.mol.nao_nr()
         self.w = w
         self.f0 = f0
         self.td = td
         self.beta = beta
         self.mu = mu # chemical potential
+        self.picture = picture
         self.fd = compute_sqrt_fd(mf.mo_energy, beta, mu)
+        self.mo_energy = mf.mo_energy
         # integrals in AO basis
         hao = mf.get_hcore()
         eri_ao = mf.mol.intor('int2e_sph')
@@ -281,17 +284,30 @@ class ERIs_b:
         self.fvv += 2.0 * einsum('kakb->ab',self.ovov)
         self.fvv -= einsum('kabk->ab',self.ovvo)
 
+        if self.picture == 'I':
+            fd, fd_ = self.fd
+            tmp_oo = einsum('pq,p,q->pq',np.diag(self.mo_energy),fd, fd ) 
+            tmp_vv = einsum('pq,p,q->pq',np.diag(self.mo_energy),fd_,fd_) 
+            tmp_oo -= np.diag(self.mo_energy)
+            tmp_vv -= np.diag(self.mo_energy)
+            self.foo -= tmp_oo
+            self.fvv -= tmp_vv
+            self.hoo -= tmp_oo
+            self.hvv -= tmp_vv
         h = None
 
 class ERIs_p:
-    def __init__(self, mf, w=0.0, f0=np.zeros(3), td=0.0, beta=0.0, mu=0.0):
+    def __init__(self, mf, w=0.0, f0=np.zeros(3), td=0.0, 
+                 beta=0.0, mu=0.0, picture='I'):
         self.no = mf.mol.nao_nr()
         self.w = w
         self.f0 = f0
         self.td = td
         self.beta = beta
         self.mu = mu # chemical potential
+        self.picture = picture
         self.fd = compute_sqrt_fd(mf.mo_energy, beta, mu)
+        self.mo_energy = mf.mo_energy
         # ZT integrals in HF basis
         hao = mf.get_hcore()
         eri_ao = mf.mol.intor('int2e_sph')
@@ -322,12 +338,12 @@ class ERIs_p:
         self.eri = utils.rotate2(self.eri_HF, C)
 
     def make_tensors(self, time=None):
-        self.h = utils.full_h(self.h0, self.h1, self.w, self.td, time) 
+        h = utils.full_h(self.h0, self.h1, self.w, self.td, time) 
         fd, fd_ = self.fd
 
-        self.hoo = einsum('pq,p,q->pq',self.h,fd ,fd )
-        self.hvv = einsum('pq,p,q->pq',self.h,fd_,fd_)
-        self.hov = einsum('pq,p,q->pq',self.h,fd ,fd_)
+        self.hoo = einsum('pq,p,q->pq',h,fd ,fd )
+        self.hvv = einsum('pq,p,q->pq',h,fd_,fd_)
+        self.hov = einsum('pq,p,q->pq',h,fd ,fd_)
         self.oovv = einsum('pqrs,p,q,r,s->pqrs',self.eri,fd ,fd ,fd_,fd_)
         self.oooo = einsum('pqrs,p,q,r,s->pqrs',self.eri,fd ,fd ,fd ,fd )
         self.vvvv = einsum('pqrs,p,q,r,s->pqrs',self.eri,fd_,fd_,fd_,fd_)
@@ -345,3 +361,14 @@ class ERIs_p:
         self.fvv  = self.hvv.copy()
         self.fvv += 2.0 * einsum('kakb->ab',self.ovov)
         self.fvv -= einsum('kabk->ab',self.ovvo)
+
+        if self.picture == 'I': 
+            tmp_oo = einsum('pq,p,q->pq',np.diag(self.mo_energy),fd, fd ) 
+            tmp_vv = einsum('pq,p,q->pq',np.diag(self.mo_energy),fd_,fd_) 
+            tmp_oo -= np.diag(self.mo_energy)
+            tmp_vv -= np.diag(self.mo_energy)
+            self.foo -= tmp_oo
+            self.fvv -= tmp_vv
+            self.hoo -= tmp_oo
+            self.hvv -= tmp_vv
+        h = None
