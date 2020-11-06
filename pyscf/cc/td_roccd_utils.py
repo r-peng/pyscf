@@ -1,6 +1,6 @@
 import numpy as np
 import math
-from pyscf import lib
+from pyscf import lib, ao2mo
 einsum = lib.einsum
 
 def update_amps(t, l, eris, time=None, X=None):
@@ -327,7 +327,7 @@ def rotate2(eri, C):
     eri = einsum('up,vq,pqrs->uvrs',C,C,eri)
     return einsum('xr,ys,uvrs->uvxy',C.conj(),C.conj(),eri)
 
-def fac(w, td, time):
+def fac_mol(w, td, time):
     if time > td:
         return 0.0 
     else:
@@ -337,10 +337,43 @@ def fac(w, td, time):
         osc = math.sin(w*time)
         return evlp * osc
 
-def full_h(h0, h1, w=None, td=None, time=None): 
-    # computes H = H0 + H1(t)
-    h = h0.copy()
-    if time is not None:
-        h += h1 * fac(w, td, time) 
-    return h
+def fac_sol(sigma, w, td, time):
+    t0 = 0.5 * td
+    if time > td:
+        return 0.0 
+    else:
+        evlp = np.exp(-0.5*(dt/sigma)**2)
+        osc = math.cos(w*dt)
+        return evlp * osc
 
+def mo_ints_mol(mf, z=np.zeros(3)): # field strength folded into z
+    nmo = mf.mol.nao_nr()
+    h0 = mf.get_hcore()
+    h0 = einsum('uv,up,vq->pq',h0,mf.mo_coeff,mf.mo_coeff)
+
+    eri = mf.mol.intor('int2e_sph')
+    eri = ao2mo.full(eri, mf.mo_coeff, compact=False)
+    eri = eri.reshape(nmo,nmo,nmo,nmo).transpose(0,2,1,3)
+
+    mu = mf.mol.intor('int1e_r')
+    mu = einsum('xuv,up,vq->xpq',mu,mf.mo_coeff,mf.mo_coeff)
+    h1 = einsum('xpq,x->pq',mu,z)
+
+    charges = mf.mol.atom_charges()
+    coords  = mf.mol.atom_coords()
+    nucl_dip = einsum('i,ix->x', charges, coords)
+    return h0, h1, eri, mu, nucl_dip
+
+def mo_ints_cell(mf, z=np.zeros(3)): # A0 folded into z
+    nmo = mf.mol.nao_nr()
+    h0 = mf.get_hcore()
+    h0 = einsum('uv,up,vq->pq',h0,mf.mo_coeff,mf.mo_coeff)
+
+    p = mf.cell.pbc_intor('int1e_ipovlp',hermi=0,comp=3)
+    p = -1j*p.conj().transpose(0,2,1)
+    p = einsum('xuv,up,vq->xpq',p,mf.mo_coeff,mf.mo_coeff) 
+    h1 = einsum('xpq,x->pq',p,z)
+
+    eri = mf.with_df.ao2mo(mf.mo_coeff, mf.kpt, compact=False)
+    eri = eri.reshape(nmo,nmo,nmo,nmo).transpose(0,2,1,3)
+    return h0, h1, eri, p

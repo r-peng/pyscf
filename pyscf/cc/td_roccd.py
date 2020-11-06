@@ -10,18 +10,17 @@ def build1(d1):
     return np.block([[doo,np.zeros((no,nv))],
                      [np.zeros((nv,no)),dvv]])
 
-def kernel(mf, t, l, w, f0, td, tf, step):
+def kernel(eris, t, l, tf, step):
     no, _, nv, _ = l.shape
     nmo = no + nv
     N = int((tf+step*0.1)/step)
     C = np.eye(nmo, dtype=complex)
 
-    eris = ERIs(mf, w, f0, td) # in HF basis
     t = np.array(t, dtype=complex)
     l = np.array(l, dtype=complex)
     d1, d2 = utils.compute_rdm12(t, l)
     e = utils.compute_energy(d1, d2, eris, time=None)
-    print('check initial energy: {}'.format(e.real+mf.energy_nuc())) 
+    print('check initial energy: {}'.format(e.real+eris.mf.energy_nuc())) 
 
     d1_old = build1(d1)
     E = np.zeros(N+1,dtype=complex) 
@@ -30,7 +29,7 @@ def kernel(mf, t, l, w, f0, td, tf, step):
         time = i * step
         eris.rotate(C)
         d1, d2 = utils.compute_rdm12(t, l)
-        X = utils.compute_X(d1, d2, eris, time)
+        X, _ = utils.compute_X(d1, d2, eris, time)
         dt, dl = utils.update_amps(t, l, eris, time)
         E[i] = utils.compute_energy(d1, d2, eris, time=None) # <H_U>
         F = utils.compute_comm(d1, d2, eris, time) # F_{qp} = <[H_U,p+q]>
@@ -52,36 +51,17 @@ def kernel(mf, t, l, w, f0, td, tf, step):
               time, (E[i] - E[0]).real*1e3, np.linalg.norm(X), err))
     return d1_new, 1j*F, C, X, t, l
 
-class ERIs:
-    def __init__(self, mf, w=0.0, f0=np.zeros(3), td=0.0):
-        self.no = mf.mol.nelec[0]
+class ERIs_mol:
+    def __init__(self, mf, z=np.zeros(3), w=0.0, td=0.0):
+        self.mf = mf
         self.w = w
-        self.f0 = f0
         self.td = td
-        # integrals in AO basis
-        hao = mf.get_hcore()
-        eri_ao = mf.mol.intor('int2e_sph')
-        mu_ao = mf.mol.intor('int1e_r')
-        h1ao = einsum('xuv,x->uv',mu_ao,f0)
-        charges = mf.mol.atom_charges()
-        coords  = mf.mol.atom_coords()
-        self.nucl_dip = einsum('i,ix->x', charges, coords)
-
-        # integrals in HF basis
-        mo_coeff = mf.mo_coeff.copy()
-        self.h0_ = einsum('uv,up,vq->pq',hao,mo_coeff,mo_coeff)
-        self.h1_ = einsum('uv,up,vq->pq',h1ao,mo_coeff,mo_coeff)
-        self.mu_ = einsum('xuv,up,vq->xpq',mu_ao,mo_coeff,mo_coeff)
-        self.eri_ = einsum('uvxy,up,vr->prxy',eri_ao,mo_coeff,mo_coeff)
-        self.eri_ = einsum('prxy,xq,ys->prqs',self.eri_,mo_coeff,mo_coeff)
-        self.eri_ = self.eri_.transpose(0,2,1,3)
+        self.h0_, self.h1_, self.eri_ = utils.mo_ints_mol(mf, z)[:3]
 
         # integrals in rotating basis
         self.h0 = np.array(self.h0_, dtype=complex)
         self.h1 = np.array(self.h1_, dtype=complex)
         self.eri = np.array(self.eri_, dtype=complex)
-
-        hao = mu_ao = h1ao = eri_ao = None
 
     def rotate(self, C, time=None):
         self.h0 = utils.rotate1(self.h0_, C)
@@ -89,8 +69,10 @@ class ERIs:
         self.eri = utils.rotate2(self.eri_, C)
 
     def make_tensors(self, time=None):
-        no = self.no
-        h = utils.full_h(self.h0, self.h1, self.w, self.td, time) 
+        no = self.mf.mol.nelec[0]
+        h = self.h0.copy()
+        if time is not None:
+            h += self.h1 * utils.fac_mol(self.w, self.td, time) 
 
         self.hoo = h[:no,:no].copy()
         self.hvv = h[no:,no:].copy()
@@ -111,5 +93,49 @@ class ERIs:
         self.fvv  = self.hvv.copy()
         self.fvv += 2.0 * einsum('kakb->ab',self.ovov)
         self.fvv -= einsum('kabk->ab',self.ovvo)
+        h = None
 
+class ERIs_sol:
+    def __init__(self, mf, z=np.zeros(3), sigma=1.0, w=0.0, td=0.0):
+        self.mf = mf
+        self.w = w
+        self.sigma = sigma
+        self.td = td
+        self.h0_, self.h1_, self.eri_ = utils.mo_ints_cell(mf, z)[:3]
+
+        # integrals in rotating basis
+        self.h0 = np.array(self.h0_, dtype=complex)
+        self.h1 = np.array(self.h1_, dtype=complex)
+        self.eri = np.array(self.eri_, dtype=complex)
+
+    def rotate(self, C, time=None):
+        self.h0 = utils.rotate1(self.h0_, C)
+        self.h1 = utils.rotate1(self.h1_, C)
+        self.eri = utils.rotate2(self.eri_, C)
+
+    def make_tensors(self, time=None):
+        no = self.mf.cell.nelec[0]
+        h = self.h0.copy()
+        if time is not None:
+            h += self.h1 * utils.fac_sol(self.sigma, self.w, self.td, time) 
+
+        self.hoo = h[:no,:no].copy()
+        self.hvv = h[no:,no:].copy()
+        self.hov = h[:no,no:].copy()
+        self.oovv = self.eri[:no,:no,no:,no:].copy()
+        self.oooo = self.eri[:no,:no,:no,:no].copy()
+        self.vvvv = self.eri[no:,no:,no:,no:].copy()
+        self.ovvo = self.eri[:no,no:,no:,:no].copy()
+        self.ovov = self.eri[:no,no:,:no,no:].copy()
+        self.ovvv = self.eri[:no,no:,no:,no:].copy()
+        self.vovv = self.eri[no:,:no,no:,no:].copy()
+        self.oovo = self.eri[:no,:no,no:,:no].copy()
+        self.ooov = self.eri[:no,:no,:no,no:].copy()
+
+        self.foo  = self.hoo.copy()
+        self.foo += 2.0 * einsum('ikjk->ij',self.oooo)
+        self.foo -= einsum('ikkj->ij',self.oooo)
+        self.fvv  = self.hvv.copy()
+        self.fvv += 2.0 * einsum('kakb->ab',self.ovov)
+        self.fvv -= einsum('kabk->ab',self.ovvo)
         h = None

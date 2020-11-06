@@ -15,31 +15,29 @@ def compute_phys1(d1, eris):
     # physical rdm1 and commutator 
     # d1 in fixed Bogoliubov basis
     fd, fd_ = eris.fd
-    no = eris.no
+    no = len(fd)
     d1_  = einsum('pq,p,q->pq',d1[:no,:no],fd ,fd ) 
     d1_ += einsum('pq,p,q->pq',d1[:no,no:],fd ,fd_) 
     d1_ += einsum('pq,p,q->pq',d1[no:,:no],fd_,fd ) 
     d1_ += einsum('pq,p,q->pq',d1[no:,no:],fd_,fd_) 
     return d1_
 
-def kernel(mf, t, l, w, f0, td, tf, beta, mu, step, basis='b', picture='I'):
+def kernel(eris, t, l, tf, step):
     no, _, nv, _ = l.shape
     nmo = no + nv
     N = int((tf+step*0.1)/step)
-    if basis == 'b': # for Bogoliubov rotation
+    if not eris.phys: # for Bogoliubov rotation
         C = np.eye(nmo, dtype=complex)
-        eris = ERIs_b(mf, w, f0, td, beta, mu, picture)
         compute_X = utils.compute_X
     else: # for physical rotation
         C = np.eye(no, dtype=complex)
-        eris = ERIs_p(mf, w, f0, td, beta, mu, picture)
         compute_X = compute_X_
 
     t = np.array(t, dtype=complex)
     l = np.array(l, dtype=complex)
     d1, d2 = utils.compute_rdm12(t, l)
     e = utils.compute_energy(d1, d2, eris, time=None)
-    print('check initial energy: {}'.format(e.real+mf.energy_nuc())) 
+    print('check initial energy: {}'.format(e.real+eris.mf.energy_nuc())) 
 
     d1_old = np.block([[d1[0],np.zeros((no,nv))],
                        [np.zeros((nv,no)),d1[1]]])
@@ -65,7 +63,7 @@ def kernel(mf, t, l, w, f0, td, tf, beta, mu, step, basis='b', picture='I'):
         d1 = utils.compute_rdm1(t, l)
         d1_new = np.block([[d1[0],np.zeros((no,nv))],
                            [np.zeros((nv,no)),d1[1]]])
-        if basis == 'b':
+        if not eris.phys:
             d1_new = utils.rotate1(d1_new, C.T.conj())
             d1_new = compute_phys1(d1_new, eris)
             F = utils.rotate1(F, C.T.conj())
@@ -188,38 +186,22 @@ def make_R(R_, nmo):
     R.imag -= R.imag.T
     return R
 
-class ERIs_b:
-    def __init__(self, mf, w=0.0, f0=np.zeros(3), td=0.0, 
+class ERIs_mol:
+    def __init__(self, mf, f0=np.zeros(3), w=0.0, td=0.0, 
                  beta=0.0, mu=0.0, picture='I'):
-        self.no = mf.mol.nao_nr()
+        self.mf = mf
         self.w = w
-        self.f0 = f0
         self.td = td
         self.beta = beta
         self.mu = mu # chemical potential
         self.picture = picture
         self.fd = compute_sqrt_fd(mf.mo_energy, beta, mu)
-        self.mo_energy = mf.mo_energy
-        # integrals in AO basis
-        hao = mf.get_hcore()
-        eri_ao = mf.mol.intor('int2e_sph')
-        mu_ao = mf.mol.intor('int1e_r')
-        h1ao = einsum('xuv,x->uv',mu_ao,f0)
-        charges = mf.mol.atom_charges()
-        coords  = mf.mol.atom_coords()
-        self.nucl_dip = einsum('i,ix->x', charges, coords)
+        self.phys = False
 
-        # integrals in HF basis
-        mo_coeff = mf.mo_coeff.copy()
-        h0 = einsum('uv,up,vq->pq',hao,mo_coeff,mo_coeff)
-        h1 = einsum('uv,up,vq->pq',h1ao,mo_coeff,mo_coeff)
-        mu = einsum('xuv,up,vq->xpq',mu_ao,mo_coeff,mo_coeff)
-        eri = einsum('uvxy,up,vr->prxy',eri_ao,mo_coeff,mo_coeff)
-        eri = einsum('prxy,xq,ys->prqs',eri,mo_coeff,mo_coeff)
-        eri = eri.transpose(0,2,1,3)
         # integrals in fixed Bogliubov basis
         fd, fd_ = self.fd
-        no = self.no
+        no = mf.mol.nao_nr()
+        h0, h1, eri = utils.mo_ints_mol(mf, f0)[:3]
         self.h0_ = np.zeros((no*2,)*2)
         self.h1_ = np.zeros((no*2,)*2)
         self.eri_ = np.zeros((no*2,)*4)
@@ -252,17 +234,18 @@ class ERIs_b:
         self.h0 = np.array(self.h0_, dtype=complex)
         self.h1 = np.array(self.h1_, dtype=complex)
         self.eri = np.array(self.eri_, dtype=complex)
-
-        hao = mu_ao = h1ao = eri_ao = None
         h0 = h1 = mu = eri = None
+
     def rotate(self, C, time=None):
         self.h0 = utils.rotate1(self.h0_, C)
         self.h1 = utils.rotate1(self.h1_, C)
         self.eri = utils.rotate2(self.eri_, C)
 
     def make_tensors(self, time=None):
-        no = self.no
-        h = utils.full_h(self.h0, self.h1, self.w, self.td, time) 
+        no = self.mf.mol.nao_nr()
+        h = self.h0.copy()
+        if time is not None: 
+            h += self.h1 * utils.fac_mol(self.w, self.td, time) 
 
         self.hoo = h[:no,:no].copy()
         self.hvv = h[no:,no:].copy()
@@ -286,10 +269,104 @@ class ERIs_b:
 
         if self.picture == 'I':
             fd, fd_ = self.fd
-            tmp_oo = einsum('pq,p,q->pq',np.diag(self.mo_energy),fd, fd ) 
-            tmp_vv = einsum('pq,p,q->pq',np.diag(self.mo_energy),fd_,fd_) 
-            tmp_oo -= np.diag(self.mo_energy)
-            tmp_vv -= np.diag(self.mo_energy)
+            tmp_oo = einsum('pq,p,q->pq',np.diag(self.mf.mo_energy),fd, fd ) 
+            tmp_vv = einsum('pq,p,q->pq',np.diag(self.mf.mo_energy),fd_,fd_) 
+            tmp_oo -= np.diag(self.mf.mo_energy)
+            tmp_vv -= np.diag(self.mf.mo_energy)
+            self.foo -= tmp_oo
+            self.fvv -= tmp_vv
+            self.hoo -= tmp_oo
+            self.hvv -= tmp_vv
+        h = None
+
+class ERIs_sol:
+    def __init__(self, mf, f0=np.zeros(3), sigma=1.0, w=0.0, td=0.0, 
+                 beta=0.0, mu=0.0, picture='I'):
+        self.mf = mf
+        self.sigma = sigma
+        self.w = w
+        self.td = td
+        self.beta = beta
+        self.mu = mu # chemical potential
+        self.picture = picture
+        self.fd = compute_sqrt_fd(mf.mo_energy, beta, mu)
+        self.phys = False
+
+        # integrals in fixed Bogliubov basis
+        fd, fd_ = self.fd
+        no = mf.mol.nao_nr()
+        h0, h1, eri = utils.mo_ints_cell(mf, f0)[:3]
+        self.h0_ = np.zeros((no*2,)*2)
+        self.h1_ = np.zeros((no*2,)*2)
+        self.eri_ = np.zeros((no*2,)*4)
+        self.h0_[:no,:no] = einsum('pq,p,q->pq',h0,fd ,fd )
+        self.h0_[no:,no:] = einsum('pq,p,q->pq',h0,fd_,fd_)
+        self.h0_[:no,no:] = einsum('pq,p,q->pq',h0,fd ,fd_)
+        self.h0_[no:,:no] = einsum('pq,p,q->pq',h0,fd_,fd)
+        self.h1_[:no,:no] = einsum('pq,p,q->pq',h1,fd ,fd )
+        self.h1_[no:,no:] = einsum('pq,p,q->pq',h1,fd_,fd_)
+        self.h1_[:no,no:] = einsum('pq,p,q->pq',h1,fd ,fd_)
+        self.h1_[no:,:no] = einsum('pq,p,q->pq',h1,fd_,fd )
+        self.eri_[:no,:no,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd ,fd )
+        self.eri_[no:,:no,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd ,fd )
+        self.eri_[:no,no:,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd ,fd )
+        self.eri_[:no,:no,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd_,fd )
+        self.eri_[:no,:no,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd ,fd_)
+        self.eri_[:no,:no,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd_,fd_)
+        self.eri_[no:,no:,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd ,fd )
+        self.eri_[:no,no:,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd_,fd )
+        self.eri_[:no,no:,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd ,fd_)
+        self.eri_[no:,:no,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd ,fd_)
+        self.eri_[no:,:no,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd_,fd )
+        self.eri_[:no,no:,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd_,fd_)
+        self.eri_[no:,:no,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd_,fd_)
+        self.eri_[no:,no:,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd ,fd_)
+        self.eri_[no:,no:,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd_,fd )
+        self.eri_[no:,no:,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd_,fd_)
+
+        # integrals in rotating basis
+        self.h0 = np.array(self.h0_, dtype=complex)
+        self.h1 = np.array(self.h1_, dtype=complex)
+        self.eri = np.array(self.eri_, dtype=complex)
+        h0 = h1 = mu = eri = None
+
+    def rotate(self, C, time=None):
+        self.h0 = utils.rotate1(self.h0_, C)
+        self.h1 = utils.rotate1(self.h1_, C)
+        self.eri = utils.rotate2(self.eri_, C)
+
+    def make_tensors(self, time=None):
+        no = self.mf.cell.nao_nr()
+        h = self.h0.copy()
+        if time is not None: 
+            h += self.h1 * utils.fac_sol(self.sigma, self.w, self.td, time) 
+
+        self.hoo = h[:no,:no].copy()
+        self.hvv = h[no:,no:].copy()
+        self.hov = h[:no,no:].copy()
+        self.oovv = self.eri[:no,:no,no:,no:].copy()
+        self.oooo = self.eri[:no,:no,:no,:no].copy()
+        self.vvvv = self.eri[no:,no:,no:,no:].copy()
+        self.ovvo = self.eri[:no,no:,no:,:no].copy()
+        self.ovov = self.eri[:no,no:,:no,no:].copy()
+        self.ovvv = self.eri[:no,no:,no:,no:].copy()
+        self.vovv = self.eri[no:,:no,no:,no:].copy()
+        self.oovo = self.eri[:no,:no,no:,:no].copy()
+        self.ooov = self.eri[:no,:no,:no,no:].copy()
+
+        self.foo  = self.hoo.copy()
+        self.foo += 2.0 * einsum('ikjk->ij',self.oooo)
+        self.foo -= einsum('ikkj->ij',self.oooo)
+        self.fvv  = self.hvv.copy()
+        self.fvv += 2.0 * einsum('kakb->ab',self.ovov)
+        self.fvv -= einsum('kabk->ab',self.ovvo)
+
+        if self.picture == 'I':
+            fd, fd_ = self.fd
+            tmp_oo = einsum('pq,p,q->pq',np.diag(self.mf.mo_energy),fd, fd ) 
+            tmp_vv = einsum('pq,p,q->pq',np.diag(self.mf.mo_energy),fd_,fd_) 
+            tmp_oo -= np.diag(self.mf.mo_energy)
+            tmp_vv -= np.diag(self.mf.mo_energy)
             self.foo -= tmp_oo
             self.fvv -= tmp_vv
             self.hoo -= tmp_oo
@@ -297,48 +374,32 @@ class ERIs_b:
         h = None
 
 class ERIs_p:
-    def __init__(self, mf, w=0.0, f0=np.zeros(3), td=0.0, 
+    def __init__(self, mf, f0=np.zeros(3), w=0.0, td=0.0, 
                  beta=0.0, mu=0.0, picture='I'):
-        self.no = mf.mol.nao_nr()
+        self.mf = mf
         self.w = w
-        self.f0 = f0
         self.td = td
         self.beta = beta
         self.mu = mu # chemical potential
         self.picture = picture
         self.fd = compute_sqrt_fd(mf.mo_energy, beta, mu)
-        self.mo_energy = mf.mo_energy
+        self.phys = True
         # ZT integrals in HF basis
-        hao = mf.get_hcore()
-        eri_ao = mf.mol.intor('int2e_sph')
-        mu_ao = mf.mol.intor('int1e_r')
-        h1ao = einsum('xuv,x->uv',mu_ao,f0)
-        charges = mf.mol.atom_charges()
-        coords  = mf.mol.atom_coords()
-        self.nucl_dip = einsum('i,ix->x', charges, coords)
-
-        mo_coeff = mf.mo_coeff
-        self.h0_HF = einsum('uv,up,vq->pq',hao,mo_coeff,mo_coeff)
-        self.h1_HF = einsum('uv,up,vq->pq',h1ao,mo_coeff,mo_coeff)
-        self.mu_HF = einsum('xuv,up,vq->xpq',mu_ao,mo_coeff,mo_coeff) # dipole
-        self.eri_HF = einsum('uvxy,up,vr->prxy',eri_ao,mo_coeff,mo_coeff)
-        self.eri_HF = einsum('prxy,xq,ys->prqs',self.eri_HF,mo_coeff,mo_coeff)
-        self.eri_HF = self.eri_HF.transpose(0,2,1,3)
-        self.mo_energy = mf.mo_energy
+        self.h0_, self.h1_, self.eri_ = utils.mo_ints_mol(mf, f0)[:3]
         # ZT integrals in rotating basis
-        self.h0 = np.array(self.h0_HF, dtype=complex)
-        self.h1 = np.array(self.h1_HF, dtype=complex)
-        self.eri = np.array(self.eri_HF, dtype=complex)
-
-        hao = eri_ao = muao = h1ao = None
+        self.h0 = np.array(self.h0_, dtype=complex)
+        self.h1 = np.array(self.h1_, dtype=complex)
+        self.eri = np.array(self.eri_, dtype=complex)
 
     def rotate(self, C): # rotate ZT integrals
-        self.h0 = utils.rotate1(self.h0_HF, C)
-        self.h1 = utils.rotate1(self.h1_HF, C)
-        self.eri = utils.rotate2(self.eri_HF, C)
+        self.h0 = utils.rotate1(self.h0_, C)
+        self.h1 = utils.rotate1(self.h1_, C)
+        self.eri = utils.rotate2(self.eri_, C)
 
     def make_tensors(self, time=None):
-        h = utils.full_h(self.h0, self.h1, self.w, self.td, time) 
+        h = self.h0.copy()
+        if time is not None: 
+            h += self.h1 * utils.fac_mol(self.w, self.td, time) 
         fd, fd_ = self.fd
 
         self.hoo = einsum('pq,p,q->pq',h,fd ,fd )
@@ -363,10 +424,10 @@ class ERIs_p:
         self.fvv -= einsum('kabk->ab',self.ovvo)
 
         if self.picture == 'I': 
-            tmp_oo = einsum('pq,p,q->pq',np.diag(self.mo_energy),fd, fd ) 
-            tmp_vv = einsum('pq,p,q->pq',np.diag(self.mo_energy),fd_,fd_) 
-            tmp_oo -= np.diag(self.mo_energy)
-            tmp_vv -= np.diag(self.mo_energy)
+            tmp_oo = einsum('pq,p,q->pq',np.diag(self.mf.mo_energy),fd, fd ) 
+            tmp_vv = einsum('pq,p,q->pq',np.diag(self.mf.mo_energy),fd_,fd_) 
+            tmp_oo -= np.diag(self.mf.mo_energy)
+            tmp_vv -= np.diag(self.mf.mo_energy)
             self.foo -= tmp_oo
             self.fvv -= tmp_vv
             self.hoo -= tmp_oo

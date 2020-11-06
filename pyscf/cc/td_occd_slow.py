@@ -631,7 +631,10 @@ class ERIs:
         self.h0 = rotate1(self.h0_, C)
         self.h1 = rotate1(self.h1_, C)
         self.eri = rotate2(self.eri_, C)
-
-    def full_h(self, time=None):
-        self.h = utils.full_h(self.h0, self.h1, self.w, self.td, time) 
                
+    def full_h(self, time=None): 
+        # computes H = H0 + H1(t)
+        self.h = self.h0.copy()
+        if time is not None:
+            self.h += self.h1 * utils.fac_mol(self.w, self.td, time) 
+        
