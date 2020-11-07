@@ -296,9 +296,9 @@ class ERIs_sol:
         fd, fd_ = self.fd
         no = mf.mol.nao_nr()
         h0, h1, eri = utils.mo_ints_cell(mf, f0)[:3]
-        self.h0_ = np.zeros((no*2,)*2)
-        self.h1_ = np.zeros((no*2,)*2)
-        self.eri_ = np.zeros((no*2,)*4)
+        self.h0_ = np.zeros((no*2,)*2, dtype=complex)
+        self.h1_ = np.zeros((no*2,)*2, dtype=complex)
+        self.eri_ = np.zeros((no*2,)*4, dtype=complex)
         self.h0_[:no,:no] = einsum('pq,p,q->pq',h0,fd ,fd )
         self.h0_[no:,no:] = einsum('pq,p,q->pq',h0,fd_,fd_)
         self.h0_[:no,no:] = einsum('pq,p,q->pq',h0,fd ,fd_)

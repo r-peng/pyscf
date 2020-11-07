@@ -339,6 +339,7 @@ def fac_mol(w, td, time):
 
 def fac_sol(sigma, w, td, time):
     t0 = 0.5 * td
+    dt = time - t0
     if time > td:
         return 0.0 
     else:
