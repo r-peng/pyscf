@@ -10,7 +10,7 @@ def build1(d1):
     return np.block([[doo,np.zeros((no,nv))],
                      [np.zeros((nv,no)),dvv]])
 
-def kernel(eris, t, l, tf, step):
+def kernel(eris, t, l, tf, step, RK=4):
     no, _, nv, _ = l.shape
     nmo = no + nv
     N = int((tf+step*0.1)/step)
@@ -27,28 +27,29 @@ def kernel(eris, t, l, tf, step):
 #    mu = np.zeros((N+1,3),dtype=complex)  
     for i in range(N+1):
         time = i * step
-        eris.rotate(C)
-        d1, d2 = utils.compute_rdm12(t, l)
-        X, _ = utils.compute_X(d1, d2, eris, time)
-        dt, dl = utils.update_amps(t, l, eris, time)
-        E[i] = utils.compute_energy(d1, d2, eris, time=None) # <H_U>
-        F = utils.compute_comm(d1, d2, eris, time) # F_{qp} = <[H_U,p+q]>
+#        X, _ = utils.compute_X(d1, d2, eris, time)
+#        dt, dl = utils.update_amps(t, l, eris, time)
+        dt, dl, X, E[i], F = utils.update_RK(t, l, C, eris, time, step, RK)
 #        mu[i,:] = einsum('qp,xpq->x',utils.rotate1(d1,C.T.conj()),eris.mu_) 
         # update 
         t += step * dt
         l += step * dl
         C = np.dot(scipy.linalg.expm(-step*X), C)
-        # Ehrenfest error
-        d1 = utils.compute_rdm1(t, l)
-        d1_new = build1(d1) 
-        d1_new = utils.rotate1(d1_new, C.T.conj())
-        F = np.block([[F[0],F[1]],[F[2],F[3]]])
-        F -= F.T.conj()
-        F = utils.rotate1(F, C.T.conj())
-        err = np.linalg.norm((d1_new-d1_old)/step-1j*F)
-        d1_old = d1_new.copy()
-        print('time: {:.4f}, EE(mH): {}, X: {}, err: {}'.format(
-              time, (E[i] - E[0]).real*1e3, np.linalg.norm(X), err))
+        if RK == 1:
+            # Ehrenfest error
+            d1 = utils.compute_rdm1(t, l)
+            d1_new = build1(d1) 
+            d1_new = utils.rotate1(d1_new, C.T.conj())
+            F = np.block([[F[0],F[1]],[F[2],F[3]]])
+            F -= F.T.conj()
+            F = utils.rotate1(F, C.T.conj())
+            err = np.linalg.norm((d1_new-d1_old)/step-1j*F)
+            d1_old = d1_new.copy()
+            print('time: {:.4f}, EE(mH): {}, X: {}, err: {}'.format(
+                  time, (E[i] - E[0]).real*1e3, np.linalg.norm(X), err))
+        else: 
+            print('time: {:.4f}, EE(mH): {}, X: {}'.format(
+                  time, (E[i] - E[0]).real*1e3, np.linalg.norm(X)))
     return d1_new, 1j*F, C, X, t, l
 
 class ERIs_mol:

@@ -22,16 +22,14 @@ def compute_phys1(d1, eris):
     d1_ += einsum('pq,p,q->pq',d1[no:,no:],fd_,fd_) 
     return d1_
 
-def kernel(eris, t, l, tf, step):
+def kernel(eris, t, l, tf, step, RK=4, orb=True):
     no, _, nv, _ = l.shape
     nmo = no + nv
     N = int((tf+step*0.1)/step)
     if not eris.phys: # for Bogoliubov rotation
         C = np.eye(nmo, dtype=complex)
-        compute_X = utils.compute_X
     else: # for physical rotation
         C = np.eye(no, dtype=complex)
-        compute_X = compute_X_
 
     t = np.array(t, dtype=complex)
     l = np.array(l, dtype=complex)
@@ -43,17 +41,12 @@ def kernel(eris, t, l, tf, step):
                        [np.zeros((nv,no)),d1[1]]])
     d1_old = compute_phys1(d1_old, eris)
     E = np.zeros(N+1,dtype=complex) 
-#    mu = np.zeros((N+1,3),dtype=complex)  
+    rdm1 = np.zeros((N+1,no,no),dtype=complex) 
     for i in range(N+1):
         time = i * step
-        eris.rotate(C)
-        d1, d2 = utils.compute_rdm12(t, l)
-        X, _ = compute_X(d1, d2, eris, time)
-        dt, dl = utils.update_amps(t, l, eris, time)
-        E[i] = utils.compute_energy(d1, d2, eris, time=None) # <H_U>
-        F = utils.compute_comm(d1, d2, eris, time) # F_{qp} = <[H_U,p+q]>
-        F = np.block([[F[0],F[1]],[F[2],F[3]]])
-        F -= F.T.conj()
+#        X, _ = compute_X(d1, d2, eris, time)
+#        dt, dl = utils.update_amps(t, l, eris, time)
+        dt, dl, X, E[i], F = utils.update_RK(t, l, C, eris, time, step, RK, orb) # <H_U>
 #        mu[i,:] = einsum('qp,xpq->x',utils.rotate1(d1,C.T.conj()),eris.mu_) 
         # update 
         t += step * dt
@@ -63,21 +56,33 @@ def kernel(eris, t, l, tf, step):
         d1 = utils.compute_rdm1(t, l)
         d1_new = np.block([[d1[0],np.zeros((no,nv))],
                            [np.zeros((nv,no)),d1[1]]])
-        if not eris.phys:
+        if RK == 1:
+            if not eris.phys:
+                d1_new = utils.rotate1(d1_new, C.T.conj())
+                d1_new = compute_phys1(d1_new, eris)
+                F = np.block([[F[0],F[1]],[F[2],F[3]]])
+                F -= F.T.conj()
+                F = utils.rotate1(F, C.T.conj())
+                F = compute_phys1(F, eris)
+            else:
+                d1_new = compute_phys1(d1_new, eris)
+                d1_new = utils.rotate1(d1_new, C.T.conj())
+                F = np.block([[F[0],F[1]],[F[2],F[3]]])
+                F -= F.T.conj()
+                F = compute_phys1(F, eris)
+                F = utils.rotate1(F, C.T.conj())
+            err = np.linalg.norm((d1_new-d1_old)/step-1j*F)
+            d1_old = d1_new.copy()
+            print('time: {:.4f}, EE(mH): {}, X: {}, err: {}'.format(
+                  time, (E[i] - E[0]).real*1e3, np.linalg.norm(X), err))
+        else: 
             d1_new = utils.rotate1(d1_new, C.T.conj())
             d1_new = compute_phys1(d1_new, eris)
-            F = utils.rotate1(F, C.T.conj())
-            F = compute_phys1(F, eris)
-        else:
-            d1_new = compute_phys1(d1_new, eris)
-            d1_new = utils.rotate1(d1_new, C.T.conj())
-            F = compute_phys1(F, eris)
-            F = utils.rotate1(F, C.T.conj())
-        err = np.linalg.norm((d1_new-d1_old)/step-1j*F)
-        d1_old = d1_new.copy()
-        print('time: {:.4f}, EE(mH): {}, X: {}, err: {}'.format(
-              time, (E[i] - E[0]).real*1e3, np.linalg.norm(X), err))
-    return d1_new, 1j*F, C, X, t, l
+            tr = 2.0*np.trace(d1_new)
+            print('time: {:.4f}, EE(mH): {}, X: {}, tr: {}'.format(
+                  time, (E[i] - E[0]).real*1e3, np.linalg.norm(X), tr))
+        rdm1[i,:,:] = d1_new.copy()
+    return rdm1
 
 def compute_X_(d1, d2, eris, time=None, thresh=1e-10):
     fd, fd_ = eris.fd

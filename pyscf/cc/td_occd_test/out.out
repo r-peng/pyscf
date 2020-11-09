@@ -1,0 +1,198 @@
+#INFO: **** input file is /home/rppeng/code/pyscf/pyscf/cc/td_occd_test/cc.py ****
+from pyscf import gto, scf, cc, lib
+#from pyscf.cc import td_roccd_ft as ft
+#from pyscf.cc import td_roccd_utils as utils
+from kelvin import ccsd, td_ccsd, scf_system
+import numpy as np
+import math
+np.set_printoptions(precision=4,suppress=True)
+
+mol = gto.Mole()
+#mol.atom = [['H', (0,0,0)], 
+#            ['H', (1,0,0)]] 
+#mol.basis = '6-31g'
+r = 0.9640
+theta = math.radians(109.5)
+x = r * math.cos(theta)
+y = r * math.sin(theta)
+mol.atom = [['O', (0,0,0)], 
+            ['H', (r,0,0)],
+            ['H', (x,y,0)]] 
+mol.symmetry = False
+mol.verbose = 4
+mol.build()
+nmo = mol.nao_nr()
+
+mf = scf.RHF(mol)
+mf.kernel()
+
+beta = 1.0
+mu = 0.0
+ngrid = 11
+sys = scf_system.scf_system(mf, 1/beta, mu, orbtype='g')
+#sys = scf_system.scf_system(mf, 1/beta, mu, orbtype='r')
+
+# differential version
+prop = {'tprop':'rk4', 'lprop':'rk4'}
+mycc_ = td_ccsd.TDCCSD(sys, prop=prop, T=1/beta, mu=mu, iprint=1, singles=False, ngrid=ngrid, athresh=0.0, saveT=True, saveL=True)
+mycc_._rccsd()
+mycc_._rccsd_lambda()
+print('nmo: ', nmo)
+print('T2[0],[beta],[beta/2]:', np.linalg.norm(mycc_.T2[0]), np.linalg.norm(mycc_.T2[-1]), np.linalg.norm(mycc_.T2[int(ngrid/2)+1]))
+print('L2[0],[beta],[beta/2]:', np.linalg.norm(mycc_.L2[0]), np.linalg.norm(mycc_.L2[-1]), np.linalg.norm(mycc_.L2[int(ngrid/2)+1]))
+tab_ = mycc_.T2[int(ngrid/2)+1].copy() 
+lab_ = mycc_.L2[int(ngrid/2)+1].copy()
+# differential version
+
+# integral version
+mycc = ccsd.ccsd(sys, T=1/beta, mu=mu, iprint=1, singles=False, ngrid=ngrid, athresh=0.0)
+Ecctot, Ecc = mycc.run()
+print('Etot: {}, Ecorr: {}'.format(Ecctot, Ecc))
+ng, nv, no = mycc.T1.shape
+L1 = np.zeros((ng, no, nv), mycc.T1.dtype)
+L2 = np.zeros((ng, no, no, nv, nv), mycc.T2.dtype)
+#L1 = np.flip(mycc.T1.transpose(0,2,1), 0)
+#L2 = np.flip(mycc.T2.transpose(0,3,4,1,2), 0)
+mycc._ft_ccsd_lambda(L1=L1,L2=L2)
+print('T2[0],[beta],[beta/2]:', np.linalg.norm(mycc.T2[0]), np.linalg.norm(mycc.T2[-1]), np.linalg.norm(mycc.T2[int(ngrid/2)+1]))
+print('L2[0],[beta],[beta/2]:', np.linalg.norm(mycc.L2[0]), np.linalg.norm(mycc.L2[-1]), np.linalg.norm(mycc.L2[int(ngrid/2)+1]))
+tab = mycc.T2[int(ngrid/2),:nmo,nmo:,:nmo,nmo:].copy()
+lab = mycc.L2[int(ngrid/2),:nmo,nmo:,:nmo,nmo:].copy()
+# integral version
+
+print('T2: ', np.linalg.norm(tab-tab_))
+print('L2: ', np.linalg.norm(lab-lab_))
+print('T2 symm: ', np.linalg.norm(tab -tab.transpose(1,0,3,2)))
+print('L2 symm: ', np.linalg.norm(tab_-tab_.transpose(1,0,3,2)))
+print('L2 symm: ', np.linalg.norm(lab -lab.transpose(1,0,3,2)))
+print('T2 symm: ', np.linalg.norm(lab_-lab_.transpose(1,0,3,2)))
+
+#w = 1.0 
+#td = 4.0
+#step = 1e-5 
+#tf = step * 100 
+#f0 = np.array((1.0,1.0,1.0))*1e-4
+#
+#eris_mol = ft.ERIs_mol(mf, f0, w, td, beta, mu)
+#ft.kernel(eris_mol, tab, lab, tf, step, RK=4)
+#eris_p = ft.ERIs_p(mf, f0, w, td, beta, mu)
+#ft.kernel(eris_p, tab, lab, tf, step)
+#INFO: ******************** input file end ********************
+
+
+System: uname_result(system='Linux', node='pauling050', release='3.10.0-327.36.3.el7.x86_64', version='#1 SMP Thu Oct 20 04:56:07 EDT 2016', machine='x86_64', processor='x86_64')  Threads 36
+Python 3.7.4 (default, Aug 13 2019, 20:35:49) 
+[GCC 7.3.0]
+numpy 1.17.2  scipy 1.3.1
+Date: Mon Nov  9 10:11:24 2020
+PySCF version 1.7.1
+PySCF path  /home/rppeng/code/pyscf/pyscf
+GIT ORIG_HEAD 07623fa27eae57132b6a1846df5dbef703f8b8e3
+GIT HEAD      ref: refs/heads/td-occd
+GIT td-occd branch  e7a3c2b9f5116aecf2db3a1037ff14c28657d966
+
+[CONFIG] conf_file None
+[INPUT] verbose = 4
+[INPUT] num. atoms = 3
+[INPUT] num. electrons = 10
+[INPUT] charge = 0
+[INPUT] spin (= nelec alpha-beta = 2S) = 0
+[INPUT] symmetry False subgroup None
+[INPUT] Mole.unit = angstrom
+[INPUT]  1 O      0.000000000000   0.000000000000   0.000000000000 AA    0.000000000000   0.000000000000   0.000000000000 Bohr
+[INPUT]  2 H      0.964000000000   0.000000000000   0.000000000000 AA    1.821695984081   0.000000000000   0.000000000000 Bohr
+[INPUT]  3 H     -0.321789812301   0.908706397413   0.000000000000 AA   -0.608094614925   1.717206218750   0.000000000000 Bohr
+
+nuclear repulsion = 9.11911969367697
+number of shells = 5
+number of NR pGTOs = 21
+number of NR cGTOs = 7
+basis = sto-3g
+ecp = {}
+CPU time:         0.37
+
+
+******** <class 'pyscf.scf.hf.RHF'> ********
+method = RHF
+initial guess = minao
+damping factor = 0
+level_shift factor = 0
+DIIS = <class 'pyscf.scf.diis.CDIIS'>
+diis_start_cycle = 1
+diis_space = 8
+SCF conv_tol = 1e-09
+SCF conv_tol_grad = None
+SCF max_cycles = 50
+direct_scf = True
+direct_scf_tol = 1e-13
+chkfile to save SCF result = /home/rppeng/code/pyscf/pyscf/cc/td_occd_test/tmpw260xfqe
+max_memory 4000 MB (current use 60 MB)
+Set gradient conv threshold to 3.16228e-05
+init E= -74.818153326502
+  HOMO = -0.391273406606063  LUMO = 0.409742888954598
+cycle= 1 E= -74.9117784358202  delta_E= -0.0936  |g|= 0.367  |ddm|= 1.69
+  HOMO = -0.262845133574531  LUMO = 0.628317623189193
+cycle= 2 E= -74.9606191767019  delta_E= -0.0488  |g|= 0.0411  |ddm|= 0.549
+  HOMO = -0.384785578553377  LUMO = 0.589137059114551
+cycle= 3 E= -74.9611001522417  delta_E= -0.000481  |g|= 0.00865  |ddm|= 0.0432
+  HOMO = -0.386612528438863  LUMO = 0.588941070739318
+cycle= 4 E= -74.9611293642963  delta_E= -2.92e-05  |g|= 0.000357  |ddm|= 0.0167
+  HOMO = -0.386655805204674  LUMO = 0.588850890340144
+cycle= 5 E= -74.9611294577742  delta_E= -9.35e-08  |g|= 5.81e-05  |ddm|= 0.00112
+  HOMO = -0.386679218905572  LUMO = 0.588889270157448
+cycle= 6 E= -74.9611294605108  delta_E= -2.74e-09  |g|= 2.34e-06  |ddm|= 0.000217
+  HOMO = -0.3866804369059  LUMO = 0.588890394876732
+cycle= 7 E= -74.9611294605149  delta_E= -4.06e-12  |g|= 1.83e-09  |ddm|= 8.95e-06
+  HOMO = -0.386680438839951  LUMO = 0.588890391867531
+Extra cycle  E= -74.961129460515  delta_E= -7.11e-14  |g|= 2.72e-10  |ddm|= 2.41e-09
+converged SCF energy = -74.961129460515
+nmo:  7
+T2[0],[beta],[beta/2]: 0.0 7447.698094097265 751.6744583411428
+L2[0],[beta],[beta/2]: 26116225.36557828 0.0 69.21242228012754
+Running CCSD at an electronic temperature of 315775.128914 K
+MP2 Energy: -0.6487215043
+  1  -0.1855943954   1.6404E+00
+  2  -0.4388101512   1.5663E+00
+  3  -0.3123673372   1.3273E+00
+  4  -0.3609894146   1.0851E+00
+  5  -0.3438374439   5.8501E-01
+  6  -0.3489942077   2.0463E-01
+  7  -0.3475886572   6.5648E-02
+  8  -0.3479348133   2.0160E-02
+  9  -0.3478563087   6.4472E-03
+ 10  -0.3478728530   2.1827E-03
+ 11  -0.3478695796   7.8563E-04
+ 12  -0.3478701930   2.9562E-04
+ 13  -0.3478700832   1.1424E-04
+ 14  -0.3478701021   4.4742E-05
+ 15  -0.3478700990   1.7632E-05
+ 16  -0.3478700995   6.9659E-06
+Total CCD time: 3.5242 s
+Etot: -79.9425994491034, Ecorr: -0.347870099484792
+  1  76.4400032037
+  2  309843.3793566152
+  3  1.8085336909
+  4  1.6147276811
+  5  1.5766641251
+  6  1.1899408693
+  7  1.4068775034
+  8  0.4655917625
+  9  0.2183287667
+ 10  0.0638572569
+ 11  0.0203356910
+ 12  0.0059879992
+ 13  0.0017468358
+ 14  0.0004998082
+ 15  0.0001419171
+ 16  0.0000401590
+ 17  0.0000113994
+ 18  0.0000032700
+Total CCSD Lambda time: 5.245197 s
+T2[0],[beta],[beta/2]: 0.0 293530.8468469644 0.7618124235829326
+L2[0],[beta],[beta/2]: 253037.35155611922 2.1683581423804887 0.6797546966937752
+T2:  751.6754715313982
+L2:  69.04185452550931
+T2 symm:  5.285344650175917e-16
+L2 symm:  5.5783577295459935e-14
+L2 symm:  1.0953484744761798e-15
+T2 symm:  4.2835495989448076e-12

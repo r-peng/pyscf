@@ -1,5 +1,5 @@
 import numpy as np
-import math
+import math, scipy
 from pyscf import lib, ao2mo
 einsum = lib.einsum
 
@@ -378,3 +378,57 @@ def mo_ints_cell(mf, z=np.zeros(3)): # A0 folded into z
     eri = mf.with_df.ao2mo(mf.mo_coeff, mf.kpt, compact=False)
     eri = eri.reshape(nmo,nmo,nmo,nmo).transpose(0,2,1,3)
     return h0, h1, eri, p
+
+def update_RK(t, l, C, eris, time, h, RK, orb=True):
+    F = None
+    eris.rotate(C)
+    d1, d2 = compute_rdm12(t, l)
+    e = compute_energy(d1, d2, eris, time=None)
+    if orb: 
+        X1, _ = compute_X(d1, d2, eris, time) 
+    else:
+        X1 = np.zeros_like(C, dtype=complex)
+    dt1, dl1 = update_amps(t, l, eris, time)
+    if RK == 1:
+        F = compute_comm(d1, d2, eris, time) # F_{qp} = <[H_U,p+q]>
+        return dt1, dl1, X1, e, F
+    if RK == 4:
+        t_ = t + dt1*h*0.5
+        l_ = l + dl1*h*0.5
+        if orb: 
+            C_ = np.dot(scipy.linalg.expm(-X1*h*0.5), C)
+            eris.rotate(C_)
+            d1, d2 = compute_rdm12(t_, l_)
+            X2, _ = compute_X(d1, d2, eris, time+h*0.5)
+        dt2, dl2 = update_amps(t_, l_, eris, time+h*0.5)
+
+        t_ = t + dt2*h*0.5
+        l_ = l + dl2*h*0.5
+        if orb: 
+            C_ = np.dot(scipy.linalg.expm(-X2*h*0.5), C)
+            eris.rotate(C_)
+            d1, d2 = compute_rdm12(t_, l_)
+            X3, _ = compute_X(d1, d2, eris, time+h*0.5)
+        dt3, dl3 = update_amps(t_, l_, eris, time+h*0.5)
+    
+        t_ = t + dt3*h
+        l_ = l + dl3*h
+        if orb:
+            C_ = np.dot(scipy.linalg.expm(-X3*h), C)
+            eris.rotate(C_)
+            d1, d2 = compute_rdm12(t_, l_)
+            X4, _ = compute_X(d1, d2, eris, time+h)
+        dt4, dl4 = update_amps(t_, l_, eris, time+h)
+    
+        dt = (dt1 + 2.0*dt2 + 2.0*dt3 + dt4)/6.0
+        dl = (dl1 + 2.0*dl2 + 2.0*dl3 + dl4)/6.0
+        if orb: 
+            X = (X1 + 2.0*X2 + 2.0*X3 + X4)/6.0
+            X1 = X2 = X3 = X4 = None
+        else:
+            X = np.zeros_like(C, dtype=complex)
+        dt1 = dt2 = dt3 = dt4 = None
+        dl1 = dl2 = dl3 = dl4 = None
+        d1 = d2 = t_ = l_ = C_ = None
+        return dt, dl, X, e, F
+
