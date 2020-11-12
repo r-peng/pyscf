@@ -35,22 +35,23 @@ def kernel(eris, t, l, tf, step, RK=4):
         t += step * dt
         l += step * dl
         C = np.dot(scipy.linalg.expm(-step*X), C)
+        d1 = utils.compute_rdm1(t, l)
+        d1_new = build1(d1) 
+        d1_new = utils.rotate1(d1_new, C.T.conj())
         if RK == 1:
             # Ehrenfest error
-            d1 = utils.compute_rdm1(t, l)
-            d1_new = build1(d1) 
-            d1_new = utils.rotate1(d1_new, C.T.conj())
             F = np.block([[F[0],F[1]],[F[2],F[3]]])
             F -= F.T.conj()
             F = utils.rotate1(F, C.T.conj())
             err = np.linalg.norm((d1_new-d1_old)/step-1j*F)
-            d1_old = d1_new.copy()
+            print(abs(np.trace(F)))
             print('time: {:.4f}, EE(mH): {}, X: {}, err: {}'.format(
                   time, (E[i] - E[0]).real*1e3, np.linalg.norm(X), err))
-        else: 
+        else:
             print('time: {:.4f}, EE(mH): {}, X: {}'.format(
                   time, (E[i] - E[0]).real*1e3, np.linalg.norm(X)))
-    return d1_new, 1j*F, C, X, t, l
+        d1_old = d1_new.copy()
+#    return d1_new, 1j*F, C, X, t, l
 
 class ERIs_mol:
     def __init__(self, mf, z=np.zeros(3), w=0.0, td=0.0):

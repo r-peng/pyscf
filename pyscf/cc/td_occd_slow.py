@@ -559,6 +559,7 @@ def kernel_rt(mf, t, l, w, f0, td, tf, step, rand=False):
         eris.rotate(C)
         d1, d2 = compute_rdm12(t, l)
         X, F = compute_X(d1, d2, eris, time, no, rand) # F_{qp} = i<[U^{-1}HU,p+q]>
+        F = rotate1(F, C.T.conj())
         dt, dl = update_amps(t, l, eris, time, X)
         E[i] = compute_energy(d1, d2, eris, time=None) # <U^{-1}H0U>
         mu[i,:] = einsum('qp,xpq->x',rotate1(d1,C.T.conj()),eris.mu_) 
@@ -573,7 +574,7 @@ def kernel_rt(mf, t, l, w, f0, td, tf, step, rand=False):
 
         d1_new, d2_new = compute_rdm12(t, l)
         d1_new = rotate1(d1_new, C.T.conj())
-        F = rotate1(F, C.T.conj())
+#        F = rotate1(F, C.T.conj())
         err = np.linalg.norm((d1_new-d1_old)/step-F)
         d1_old = d1_new.copy()
         print('time: {:.4f}, EE(mH): {}, X: {}, err: {}'.format(

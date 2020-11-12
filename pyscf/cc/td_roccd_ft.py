@@ -72,6 +72,7 @@ def kernel(eris, t, l, tf, step, RK=4, orb=True):
                 F = compute_phys1(F, eris)
                 F = utils.rotate1(F, C.T.conj())
             err = np.linalg.norm((d1_new-d1_old)/step-1j*F)
+            print(abs(np.trace(F)))
             d1_old = d1_new.copy()
             print('time: {:.4f}, EE(mH): {}, X: {}, err: {}'.format(
                   time, (E[i] - E[0]).real*1e3, np.linalg.norm(X), err))
@@ -80,116 +81,9 @@ def kernel(eris, t, l, tf, step, RK=4, orb=True):
             d1_new = compute_phys1(d1_new, eris)
             tr = 2.0*np.trace(d1_new)
             print('time: {:.4f}, EE(mH): {}, X: {}, tr: {}'.format(
-                  time, (E[i] - E[0]).real*1e3, np.linalg.norm(X), tr))
+                  time, (E[i] - E[0]).real*1e3, np.linalg.norm(X), tr.real))
         rdm1[i,:,:] = d1_new.copy()
     return rdm1
-
-def compute_X_(d1, d2, eris, time=None, thresh=1e-10):
-    fd, fd_ = eris.fd
-    nmo = len(fd)
-    _, fov, fvo, _ = utils.compute_comm(d1, d2, eris, time, full=False)  
-    F  = einsum('pq,p,q->pq',fov,fd ,fd_)
-    F += einsum('pq,p,q->pq',fvo,fd_,fd )
-    F -= F.T.conj()
-    d1 = np.block([[d1[0],np.zeros((nmo,nmo))],
-                   [np.zeros((nmo,nmo)),d1[1]]])
-    d1 = compute_phys1(d1, eris)
-    A  = einsum('qr,sp->pqrs',np.eye(nmo),d1)
-    A -= einsum('sp,qr->pqrs',np.eye(nmo),d1)
-
-    A_, F_ = make_AB(A, F.T)
-    R_ = solve(A_, F_, thresh)
-    R = make_R(R_, nmo)
-
-    Roo = einsum('pq,p,q->pq',R,fd ,fd )
-    Rvv = einsum('pq,p,q->pq',R,fd_,fd_)
-    print('check orbital equation: ', np.linalg.norm(F.T-einsum('pqrs,rs->pq',A,R)))
-    A = B = Aovvo = Bov = A_ = B_ = R_ = None
-    return 1j*R, None 
-
-def extract1(A): # extract A_{p<q,r<s}
-    nmo = A.shape[0]
-    N = int(nmo*(nmo-1)/2) 
-    A_ = np.zeros((N,N))
-    row, col = 0,0
-    for p in range(nmo):
-        for q in range(p+1,nmo):
-            for r in range(nmo):
-                for s in range(r+1,nmo):
-                    A_[row,col] = A[p,q,r,s].copy()
-                    col += 1
-            row += 1
-            col = 0
-    return A_
-
-def extract2(A): # extract A_{p<q,rr}
-    nmo = A.shape[0]
-    N = int(nmo*(nmo-1)/2) 
-    A_ = np.zeros((N,nmo))
-    row = 0
-    for p in range(nmo):
-        for q in range(p+1,nmo):
-            for r in range(nmo):
-                A_[row,r] = A[p,q,r,r].copy()
-            row += 1
-    return A_
-
-def extract3(A): # extractA_{pp,rr}
-    nmo = A.shape[0]
-    A_ = np.zeros((nmo,nmo))
-    for p in range(nmo):
-        for q in range(nmo):
-            A_[p,q] = A[p,p,q,q].copy()
-    return A_
-
-def make_AB(A, B):
-    nmo = B.shape[0] 
-    N = int(nmo*(nmo-1)/2)
-    iu = np.triu_indices(nmo,1)
-    di = np.diag_indices(nmo)
-
-    A11 = extract1( A.real-A.real.transpose(1,0,2,3))
-    A12 = extract2( A.real)
-    A13 = extract1(-A.imag+A.imag.transpose(1,0,2,3))
-    A21 = extract1( A.imag+A.imag.transpose(1,0,2,3))
-    A22 = extract2( A.imag)
-    A23 = extract1( A.real+A.real.transpose(1,0,2,3))
-    A32 = extract3( A.imag)
-    A31 = -2 * A22.T 
-    A33 = -2 * A12.T
-    A_ = np.block([[A11, A12, A13], [A21, A22, A23], [A31, A32, A33]])
-
-    B_ = np.zeros(2*N+nmo) 
-    B_[:N] = B.real[iu].copy() 
-    B_[N:2*N] = B.imag[iu].copy()
-    B_[2*N:] = B.imag[di].copy()
-
-    A11 = A12 = A13 = A21 = A22 = A23 = A31 = A32 = A33 = None
-    return A_, B_
-
-def solve(A, B, thresh=1e-3):
-    u, s, vh = np.linalg.svd(A)
-    uB = np.dot(u.T.conj(),B)
-    idxs = np.argwhere(s>thresh)
-    R = np.zeros_like(B)
-    for idx in idxs:
-        R[idx] = uB[idx]/s[idx]
-    R = np.dot(vh.T.conj(), R)
-#    print('singularity error: ', np.linalg.norm(B-np.dot(A,R)))
-#    print('singular values: ', len(B)-len(idxs))
-    return R
-
-def make_R(R_, nmo):
-    R = np.zeros((nmo,nmo),dtype=complex)
-    N = int(nmo*(nmo-1)/2)
-    iu = np.triu_indices(nmo,1)
-    di = np.diag_indices(nmo)
-    R.real[iu] = R_[:N].copy()
-    R.real += R.real.T
-    R.real[di] = R_[N:N+nmo].copy()
-    R.imag[iu] = R_[N+nmo:].copy()
-    R.imag -= R.imag.T
-    return R
 
 class ERIs_mol:
     def __init__(self, mf, f0=np.zeros(3), w=0.0, td=0.0, 
@@ -402,14 +296,14 @@ class ERIs_p:
         self.eri = utils.rotate2(self.eri_, C)
 
     def make_tensors(self, time=None):
-        h = self.h0.copy()
+        self.h = self.h0.copy()
         if time is not None: 
-            h += self.h1 * utils.fac_mol(self.w, self.td, time) 
+            self.h += self.h1 * utils.fac_mol(self.w, self.td, time) 
         fd, fd_ = self.fd
 
-        self.hoo = einsum('pq,p,q->pq',h,fd ,fd )
-        self.hvv = einsum('pq,p,q->pq',h,fd_,fd_)
-        self.hov = einsum('pq,p,q->pq',h,fd ,fd_)
+        self.hoo = einsum('pq,p,q->pq',self.h,fd ,fd )
+        self.hvv = einsum('pq,p,q->pq',self.h,fd_,fd_)
+        self.hov = einsum('pq,p,q->pq',self.h,fd ,fd_)
         self.oovv = einsum('pqrs,p,q,r,s->pqrs',self.eri,fd ,fd ,fd_,fd_)
         self.oooo = einsum('pqrs,p,q,r,s->pqrs',self.eri,fd ,fd ,fd ,fd )
         self.vvvv = einsum('pqrs,p,q,r,s->pqrs',self.eri,fd_,fd_,fd_,fd_)
@@ -421,12 +315,17 @@ class ERIs_p:
         self.ooov = einsum('pqrs,p,q,r,s->pqrs',self.eri,fd ,fd ,fd ,fd_)
 
         # "normal orders" the FT tensors
-        self.foo  = self.hoo.copy()
-        self.foo += 2.0 * einsum('ikjk->ij',self.oooo)
-        self.foo -= einsum('ikkj->ij',self.oooo)
-        self.fvv  = self.hvv.copy()
-        self.fvv += 2.0 * einsum('kakb->ab',self.ovov)
-        self.fvv -= einsum('kabk->ab',self.ovvo)
+#        self.foo  = self.hoo.copy()
+#        self.foo += 2.0 * einsum('ikjk->ij',self.oooo)
+#        self.foo -= einsum('ikkj->ij',self.oooo)
+#        self.fvv  = self.hvv.copy()
+#        self.fvv += 2.0 * einsum('kakb->ab',self.ovov)
+#        self.fvv -= einsum('kabk->ab',self.ovvo)
+        f = self.h.copy()
+        f += 2.0 * einsum('prqr,r->pq',self.eri,np.square(fd))
+        f -= einsum('prrq,r->pq',self.eri,np.square(fd))
+        self.foo = einsum('pq,p,q->pq',f,fd ,fd )
+        self.fvv = einsum('pq,p,q->pq',f,fd_,fd_)
 
         if self.picture == 'I': 
             tmp_oo = einsum('pq,p,q->pq',np.diag(self.mf.mo_energy),fd, fd ) 
@@ -438,3 +337,154 @@ class ERIs_p:
             self.hoo -= tmp_oo
             self.hvv -= tmp_vv
         h = None
+
+    def compute_rdm1(self, t, l, dt=None, dl=None):
+        fd, fd_ = self.fd
+        doo, dvv = utils.compute_rdm1(t, l, dt, dl)
+        d1  = einsum('pq,p,q->pq',doo,fd ,fd ) 
+        d1 += einsum('pq,p,q->pq',dvv,fd_,fd_) 
+        return d1
+
+    def compute_rdm12(self, t, l):
+        fd, fd_ = self.fd
+        (doo, dvv), (doooo, doovv, dovvo, dovov, dvvvv) = utils.compute_rdm12(t, l)
+        d1  = einsum('pq,p,q->pq',doo,fd ,fd ) 
+        d1 += einsum('pq,p,q->pq',dvv,fd_,fd_) 
+        d2  = einsum('pqrs,p,q,r,s->pqrs',doooo,fd ,fd ,fd ,fd ) # oooo 
+        d2 += einsum('pqrs,p,q,r,s->pqrs',doovv,fd ,fd ,fd_,fd_) # oovv
+        d2 += einsum('pqrs,p,q,r,s->rspq',doovv.conj(),fd ,fd ,fd_,fd_) # vvoo
+        d2 += einsum('pqrs,p,q,r,s->pqrs',dovvo,fd ,fd_,fd_,fd ) # ovvo
+        d2 += einsum('pqrs,p,q,r,s->qpsr',dovvo,fd ,fd_,fd_,fd ) # voov
+        d2 += einsum('pqrs,p,q,r,s->pqrs',dovov,fd ,fd_,fd ,fd_) # ovov
+        d2 += einsum('pqrs,p,q,r,s->qpsr',dovov,fd ,fd_,fd ,fd_) # vovo
+        d2 += einsum('pqrs,p,q,r,s->qpsr',dvvvv,fd_,fd_,fd_,fd_) # vvvv
+        return d1, d2
+
+    def compute_comm(self, d1, d2, time=None): #f_qp = <[H,p+q]>
+        self.make_tensors(time)
+        eri_ = self.eri - self.eri.transpose(0,1,3,2)
+        d2_ = d2 - d2.transpose(0,1,3,2)
+    
+        f  = einsum('vp,pu->vu',d1,self.h)
+        f += 0.5 * einsum('vspq,pqus->vu',d2_,eri_)
+        f += einsum('vspq,pqus->vu',d2,self.eri)
+        return f
+
+    def compute_energy(self, d1, d2, time=None):
+        self.make_tensors(time)
+        eri_ = self.eri - self.eri.transpose(0,1,3,2)
+        d2_ = d2 - d2.transpose(0,1,3,2)
+        
+        e  = 2.0 * einsum('pq,qp',self.h,d1)
+        e += 0.5 * einsum('pqrs,rspq',eri_,d2_)
+        e += einsum('pqrs,rspq',self.eri,d2)
+        return e.real 
+
+
+def compute_X_(d1, d2, eris, time=None, thresh=1e-10):
+    fd, fd_ = eris.fd
+    nmo = len(fd)
+    _, fov, fvo, _ = utils.compute_comm(d1, d2, eris, time, full=False)  
+    F  = einsum('pq,p,q->pq',fov,fd ,fd_)
+    F += einsum('pq,p,q->pq',fvo,fd_,fd )
+    F -= F.T.conj()
+    d1 = np.block([[d1[0],np.zeros((nmo,nmo))],
+                   [np.zeros((nmo,nmo)),d1[1]]])
+    d1 = compute_phys1(d1, eris)
+    A  = einsum('qr,sp->pqrs',np.eye(nmo),d1)
+    A -= einsum('sp,qr->pqrs',np.eye(nmo),d1)
+
+    A_, F_ = make_AB(A, F.T)
+    R_ = solve(A_, F_, thresh)
+    R = make_R(R_, nmo)
+
+    Roo = einsum('pq,p,q->pq',R,fd ,fd )
+    Rvv = einsum('pq,p,q->pq',R,fd_,fd_)
+    print('check orbital equation: ', np.linalg.norm(F.T-einsum('pqrs,rs->pq',A,R)))
+    A = B = Aovvo = Bov = A_ = B_ = R_ = None
+    return 1j*R, None 
+
+def extract1(A): # extract A_{p<q,r<s}
+    nmo = A.shape[0]
+    N = int(nmo*(nmo-1)/2) 
+    A_ = np.zeros((N,N))
+    row, col = 0,0
+    for p in range(nmo):
+        for q in range(p+1,nmo):
+            for r in range(nmo):
+                for s in range(r+1,nmo):
+                    A_[row,col] = A[p,q,r,s].copy()
+                    col += 1
+            row += 1
+            col = 0
+    return A_
+
+def extract2(A): # extract A_{p<q,rr}
+    nmo = A.shape[0]
+    N = int(nmo*(nmo-1)/2) 
+    A_ = np.zeros((N,nmo))
+    row = 0
+    for p in range(nmo):
+        for q in range(p+1,nmo):
+            for r in range(nmo):
+                A_[row,r] = A[p,q,r,r].copy()
+            row += 1
+    return A_
+
+def extract3(A): # extractA_{pp,rr}
+    nmo = A.shape[0]
+    A_ = np.zeros((nmo,nmo))
+    for p in range(nmo):
+        for q in range(nmo):
+            A_[p,q] = A[p,p,q,q].copy()
+    return A_
+
+def make_AB(A, B):
+    nmo = B.shape[0] 
+    N = int(nmo*(nmo-1)/2)
+    iu = np.triu_indices(nmo,1)
+    di = np.diag_indices(nmo)
+
+    A11 = extract1( A.real-A.real.transpose(1,0,2,3))
+    A12 = extract2( A.real)
+    A13 = extract1(-A.imag+A.imag.transpose(1,0,2,3))
+    A21 = extract1( A.imag+A.imag.transpose(1,0,2,3))
+    A22 = extract2( A.imag)
+    A23 = extract1( A.real+A.real.transpose(1,0,2,3))
+    A32 = extract3( A.imag)
+    A31 = -2 * A22.T 
+    A33 = -2 * A12.T
+    A_ = np.block([[A11, A12, A13], [A21, A22, A23], [A31, A32, A33]])
+
+    B_ = np.zeros(2*N+nmo) 
+    B_[:N] = B.real[iu].copy() 
+    B_[N:2*N] = B.imag[iu].copy()
+    B_[2*N:] = B.imag[di].copy()
+
+    A11 = A12 = A13 = A21 = A22 = A23 = A31 = A32 = A33 = None
+    return A_, B_
+
+def solve(A, B, thresh=1e-3):
+    u, s, vh = np.linalg.svd(A)
+    uB = np.dot(u.T.conj(),B)
+    idxs = np.argwhere(s>thresh)
+    R = np.zeros_like(B)
+    for idx in idxs:
+        R[idx] = uB[idx]/s[idx]
+    R = np.dot(vh.T.conj(), R)
+#    print('singularity error: ', np.linalg.norm(B-np.dot(A,R)))
+#    print('singular values: ', len(B)-len(idxs))
+    return R
+
+def make_R(R_, nmo):
+    R = np.zeros((nmo,nmo),dtype=complex)
+    N = int(nmo*(nmo-1)/2)
+    iu = np.triu_indices(nmo,1)
+    di = np.diag_indices(nmo)
+    R.real[iu] = R_[:N].copy()
+    R.real += R.real.T
+    R.real[di] = R_[N:N+nmo].copy()
+    R.imag[iu] = R_[N+nmo:].copy()
+    R.imag -= R.imag.T
+    return R
+
