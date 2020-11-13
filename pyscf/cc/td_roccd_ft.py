@@ -56,32 +56,19 @@ def kernel(eris, t, l, tf, step, RK=4, orb=True):
         d1 = utils.compute_rdm1(t, l)
         d1_new = np.block([[d1[0],np.zeros((no,nv))],
                            [np.zeros((nv,no)),d1[1]]])
+        d1_new = utils.rotate1(d1_new, C.T.conj())
+        d1_new = compute_phys1(d1_new, eris)
         if RK == 1:
-            if not eris.phys:
-                d1_new = utils.rotate1(d1_new, C.T.conj())
-                d1_new = compute_phys1(d1_new, eris)
-                F = np.block([[F[0],F[1]],[F[2],F[3]]])
-                F -= F.T.conj()
-                F = utils.rotate1(F, C.T.conj())
-                F = compute_phys1(F, eris)
-            else:
-                d1_new = compute_phys1(d1_new, eris)
-                d1_new = utils.rotate1(d1_new, C.T.conj())
-                F = np.block([[F[0],F[1]],[F[2],F[3]]])
-                F -= F.T.conj()
-                F = compute_phys1(F, eris)
-                F = utils.rotate1(F, C.T.conj())
+            F = compute_phys1(F, eris)
             err = np.linalg.norm((d1_new-d1_old)/step-1j*F)
             print(abs(np.trace(F)))
-            d1_old = d1_new.copy()
             print('time: {:.4f}, EE(mH): {}, X: {}, err: {}'.format(
                   time, (E[i] - E[0]).real*1e3, np.linalg.norm(X), err))
         else: 
-            d1_new = utils.rotate1(d1_new, C.T.conj())
-            d1_new = compute_phys1(d1_new, eris)
             tr = 2.0*np.trace(d1_new)
             print('time: {:.4f}, EE(mH): {}, X: {}, tr: {}'.format(
                   time, (E[i] - E[0]).real*1e3, np.linalg.norm(X), tr.real))
+        d1_old = d1_new.copy()
         rdm1[i,:,:] = d1_new.copy()
     return rdm1
 

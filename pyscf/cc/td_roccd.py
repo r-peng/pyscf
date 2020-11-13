@@ -4,11 +4,11 @@ from pyscf.cc import td_roccd_utils as utils
 import scipy
 einsum = lib.einsum
 
-def build1(d1):
-    doo, dvv = d1
-    no, nv = doo.shape[0], dvv.shape[0]
-    return np.block([[doo,np.zeros((no,nv))],
-                     [np.zeros((nv,no)),dvv]])
+#def build1(d1):
+#    doo, dvv = d1
+#    no, nv = doo.shape[0], dvv.shape[0]
+#    return np.block([[doo,np.zeros((no,nv))],
+#                     [np.zeros((nv,no)),dvv]])
 
 def kernel(eris, t, l, tf, step, RK=4):
     no, _, nv, _ = l.shape
@@ -22,7 +22,8 @@ def kernel(eris, t, l, tf, step, RK=4):
     e = utils.compute_energy(d1, d2, eris, time=None)
     print('check initial energy: {}'.format(e.real+eris.mf.energy_nuc())) 
 
-    d1_old = build1(d1)
+    d1_old = np.block([[d1[0],np.zeros((no,nv))],
+                       [np.zeros((nv,no)),d1[1]]])
     E = np.zeros(N+1,dtype=complex) 
 #    mu = np.zeros((N+1,3),dtype=complex)  
     for i in range(N+1):
@@ -36,22 +37,19 @@ def kernel(eris, t, l, tf, step, RK=4):
         l += step * dl
         C = np.dot(scipy.linalg.expm(-step*X), C)
         d1 = utils.compute_rdm1(t, l)
-        d1_new = build1(d1) 
+        d1_new = np.block([[d1[0],np.zeros((no,nv))],
+                           [np.zeros((nv,no)),d1[1]]])
         d1_new = utils.rotate1(d1_new, C.T.conj())
         if RK == 1:
             # Ehrenfest error
-            F = np.block([[F[0],F[1]],[F[2],F[3]]])
-            F -= F.T.conj()
-            F = utils.rotate1(F, C.T.conj())
             err = np.linalg.norm((d1_new-d1_old)/step-1j*F)
-            print(abs(np.trace(F)))
             print('time: {:.4f}, EE(mH): {}, X: {}, err: {}'.format(
                   time, (E[i] - E[0]).real*1e3, np.linalg.norm(X), err))
         else:
             print('time: {:.4f}, EE(mH): {}, X: {}'.format(
                   time, (E[i] - E[0]).real*1e3, np.linalg.norm(X)))
         d1_old = d1_new.copy()
-#    return d1_new, 1j*F, C, X, t, l
+    return d1_new, 1j*F, C, X, t, l
 
 class ERIs_mol:
     def __init__(self, mf, z=np.zeros(3), w=0.0, td=0.0):

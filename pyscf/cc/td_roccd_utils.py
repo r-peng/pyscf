@@ -391,6 +391,9 @@ def update_RK(t, l, C, eris, time, h, RK, orb=True):
     dt1, dl1 = update_amps(t, l, eris, time)
     if RK == 1:
         F = compute_comm(d1, d2, eris, time) # F_{qp} = <[H_U,p+q]>
+        F = np.block([[F[0],F[1]],[F[2],F[3]]])
+        F -= F.T.conj()
+        F = rotate1(F, C.T.conj())
         return dt1, dl1, X1, e, F
     if RK == 4:
         t_ = t + dt1*h*0.5
