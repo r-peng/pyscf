@@ -194,6 +194,9 @@ def compute_X(d1, d2, eris, time=None):
     Rvo = Rvo.reshape(nv,no)
     R = np.block([[np.zeros((no,no)),Rvo.T.conj()],
                    [Rvo,np.zeros((nv,nv))]])
+    if eris.picture == 'I':
+        R += np.block([[eris.Roo,np.zeros((no,nv))],
+                       [np.zeros((nv,no)),eris.Rvv]])
     Bov = Aovvo = fvo = fvo = None
     return 1j*R, None
 
