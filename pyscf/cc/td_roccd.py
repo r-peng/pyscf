@@ -4,12 +4,6 @@ from pyscf.cc import td_roccd_utils as utils
 import scipy
 einsum = lib.einsum
 
-#def build1(d1):
-#    doo, dvv = d1
-#    no, nv = doo.shape[0], dvv.shape[0]
-#    return np.block([[doo,np.zeros((no,nv))],
-#                     [np.zeros((nv,no)),dvv]])
-
 def kernel(eris, t, l, tf, step, RK=4):
     no, _, nv, _ = l.shape
     nmo = no + nv
@@ -28,8 +22,6 @@ def kernel(eris, t, l, tf, step, RK=4):
 #    mu = np.zeros((N+1,3),dtype=complex)  
     for i in range(N+1):
         time = i * step
-#        X, _ = utils.compute_X(d1, d2, eris, time)
-#        dt, dl = utils.update_amps(t, l, eris, time)
         dt, dl, X, E[i], F = utils.update_RK(t, l, C, eris, time, step, RK)
 #        mu[i,:] = einsum('qp,xpq->x',utils.rotate1(d1,C.T.conj()),eris.mu_) 
         # update 
@@ -49,7 +41,7 @@ def kernel(eris, t, l, tf, step, RK=4):
             print('time: {:.4f}, EE(mH): {}, X: {}'.format(
                   time, (E[i] - E[0]).real*1e3, np.linalg.norm(X)))
         d1_old = d1_new.copy()
-    return d1_new, 1j*F, C, X, t, l
+    return d1_new, F, C, X, t, l
 
 class ERIs_mol:
     def __init__(self, mf, z=np.zeros(3), w=0.0, td=0.0):
@@ -57,13 +49,14 @@ class ERIs_mol:
         self.w = w
         self.td = td
         self.h0_, self.h1_, self.eri_ = utils.mo_ints_mol(mf, z)[:3]
+        self.picture = 'S'
 
         # integrals in rotating basis
         self.h0 = np.array(self.h0_, dtype=complex)
         self.h1 = np.array(self.h1_, dtype=complex)
         self.eri = np.array(self.eri_, dtype=complex)
 
-    def rotate(self, C, time=None):
+    def rotate(self, C):
         self.h0 = utils.rotate1(self.h0_, C)
         self.h1 = utils.rotate1(self.h1_, C)
         self.eri = utils.rotate2(self.eri_, C)
@@ -83,8 +76,6 @@ class ERIs_mol:
         self.ovvo = self.eri[:no,no:,no:,:no].copy()
         self.ovov = self.eri[:no,no:,:no,no:].copy()
         self.ovvv = self.eri[:no,no:,no:,no:].copy()
-        self.vovv = self.eri[no:,:no,no:,no:].copy()
-        self.oovo = self.eri[:no,:no,no:,:no].copy()
         self.ooov = self.eri[:no,:no,:no,no:].copy()
 
         self.foo  = self.hoo.copy()
@@ -101,6 +92,7 @@ class ERIs_sol:
         self.w = w
         self.sigma = sigma
         self.td = td
+        self.picture = 'S'
         self.h0_, self.h1_, self.eri_ = utils.mo_ints_cell(mf, z)[:3]
 
         # integrals in rotating basis
@@ -128,8 +120,6 @@ class ERIs_sol:
         self.ovvo = self.eri[:no,no:,no:,:no].copy()
         self.ovov = self.eri[:no,no:,:no,no:].copy()
         self.ovvv = self.eri[:no,no:,no:,no:].copy()
-        self.vovv = self.eri[no:,:no,no:,no:].copy()
-        self.oovo = self.eri[:no,:no,no:,:no].copy()
         self.ooov = self.eri[:no,:no,:no,no:].copy()
 
         self.foo  = self.hoo.copy()

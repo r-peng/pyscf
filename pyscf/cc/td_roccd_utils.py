@@ -81,6 +81,7 @@ def update_amps(t, l, eris, time=None, X=None):
 
     oovv_ = ovvo_ = t_ = l_ = None
     loooo = lvvvv = rovvo = rovov = rovvo_ = tmp = None
+    Foo = Fvv = None
     return -1j*T, 1j*L
 
 def compute_rho1(t, l): # normal ordered, asymmetric
@@ -217,29 +218,27 @@ def compute_comm(d1, d2, eris, time=None, full=True):
 
     eris.make_tensors(time)
     ovvv = eris.ovvv
-    vovv = eris.vovv
-    oovo = eris.oovo
     ooov = eris.ooov
-    ovvv_ = ovvv - vovv.transpose(1,0,2,3)
-    oovo_ = oovo - ooov.transpose(0,1,3,2)
+    ovvv_ = ovvv - ovvv.transpose(0,1,3,2)
+    ooov_ = ooov - ooov.transpose(1,0,2,3)
 
     fvo  = einsum('ab,ib->ai',dvv,eris.hov.conj())
     fvo += 0.5 * einsum('abcd,ibcd->ai',dvvvv_,ovvv_.conj())
-    fvo += 0.5 * einsum('lkba,lkbi->ai',doovv_.conj(),oovo_)
-    fvo +=       einsum('jabk,jibk->ai',dovvo_,oovo_.conj())
+    fvo += 0.5 * einsum('klab,klib->ai',doovv_.conj(),ooov_)
+    fvo +=       einsum('jabk,ijkb->ai',dovvo_,ooov_.conj())
     fvo += einsum('abcd,ibcd->ai',dvvvv,ovvv.conj())
-    fvo += einsum('lkba,lkbi->ai',doovv.conj(),oovo)
-    fvo += einsum('jabk,jibk->ai',dovvo,oovo.conj())
+    fvo += einsum('klab,klib->ai',doovv.conj(),ooov)
+    fvo += einsum('jabk,ijkb->ai',dovvo,ooov.conj())
     fvo += einsum('jakb,jikb->ai',dovov,ooov.conj())
 
     fov  = einsum('ij,ja->ia',doo,eris.hov)
-    fov += 0.5 * einsum('ijkl,klaj->ia',doooo_,oovo_)
+    fov += 0.5 * einsum('ijkl,lkja->ia',doooo_,ooov_)
     fov += 0.5 * einsum('jidc,jadc->ia',doovv_,ovvv_.conj())
     fov +=       einsum('ibcj,jcba->ia',dovvo_,ovvv_)
-    fov += einsum('ijkl,klaj->ia',doooo,oovo)
+    fov += einsum('ijkl,lkja->ia',doooo,ooov)
     fov += einsum('jidc,jadc->ia',doovv,ovvv.conj())
     fov += einsum('ibcj,jcba->ia',dovvo,ovvv)
-    fov += einsum('ibjc,cjba->ia',dovov,vovv)
+    fov += einsum('ibjc,jcab->ia',dovov,ovvv)
 
     foo = fvv = None
     if full:
@@ -273,7 +272,7 @@ def compute_comm(d1, d2, eris, time=None, full=True):
         oooo_ = oovv_ = ovvo_ = vvvv_ = None
 
     doooo_ = doovv_ = dovvo_ = dvvvv_ = None
-    ovvv_ = oovo_ = None
+    ovvv_ = ooov_ = None
     return foo,fov,fvo,fvv
 
 def compute_der1(d1, dd1, C, X):
@@ -326,8 +325,8 @@ def compute_energy(d1, d2, eris, time=None):
 
 def rotate1(h, C):
     return einsum('up,vq,...pq->...uv',C,C.conj(),h) 
-def rotate2(eri, C):
-    eri = einsum('up,vq,pqrs->uvrs',C,C,eri)
+def rotate2(eri_, C):
+    eri = einsum('up,vq,pqrs->uvrs',C,C,eri_)
     return einsum('xr,ys,uvrs->uvxy',C.conj(),C.conj(),eri)
 
 def fac_mol(w, td, time):
@@ -437,4 +436,11 @@ def update_RK(t, l, C, eris, time, h, RK, orb=True):
         dl1 = dl2 = dl3 = dl4 = None
         d1 = d2 = t_ = l_ = C_ = None
         return dt, dl, X, e, F
+
+def compute_sqrt_fd(mo_energy, beta, mu):
+    fd = (mo_energy - mu) * beta
+    fd = np.exp(fd) + 1.0
+    fd = np.reciprocal(fd) # n_p
+    fd_ = 1.0 - fd # 1-n_p
+    return np.sqrt(fd), np.sqrt(fd_)
 

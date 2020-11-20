@@ -4,13 +4,6 @@ from pyscf.cc import td_roccd_utils as utils
 import scipy
 einsum = lib.einsum
 
-def compute_sqrt_fd(mo_energy, beta, mu):
-    fd = (mo_energy - mu) * beta
-    fd = np.exp(fd) + 1.0
-    fd = np.reciprocal(fd) # n_p
-    fd_ = 1.0 - fd # 1-n_p
-    return np.sqrt(fd), np.sqrt(fd_)
-
 def compute_phys1(d1, eris): 
     # physical rdm1 and commutator 
     # d1 in fixed Bogoliubov basis
@@ -47,7 +40,6 @@ def kernel(eris, t, l, tf, step, RK=4, orb=True):
     l = np.array(l, dtype=complex)
     d1, d2 = utils.compute_rdm12(t, l)
     e = utils.compute_energy(d1, d2, eris, time=None)
-    print('check initial energy: {}'.format(e.real)) 
 #    print('check initial energy: {}'.format(e.real+eris.mf.energy_nuc())) 
 
     d1_old = np.block([[d1[0],np.zeros((no,nv))],
@@ -57,8 +49,6 @@ def kernel(eris, t, l, tf, step, RK=4, orb=True):
     rdm1 = np.zeros((N+1,no,no),dtype=complex) 
     for i in range(N+1):
         time = i * step
-#        X, _ = compute_X(d1, d2, eris, time)
-#        dt, dl = utils.update_amps(t, l, eris, time)
         dt, dl, X, E[i], F = utils.update_RK(t, l, C, eris, time, step, RK, orb) # <H_U>
 #        mu[i,:] = einsum('qp,xpq->x',utils.rotate1(d1,C.T.conj()),eris.mu_) 
         # update 
@@ -104,8 +94,7 @@ class ERIs_mol:
         self.beta = beta
         self.mu = mu # chemical potential
         self.picture = picture
-        self.fd = compute_sqrt_fd(mf.mo_energy, beta, mu)
-#        self.phys = False
+        self.fd = utils.compute_sqrt_fd(mf.mo_energy, beta, mu)
 
         # integrals in fixed Bogliubov basis
         fd, fd_ = self.fd
@@ -197,8 +186,7 @@ class ERIs_sol:
         self.beta = beta
         self.mu = mu # chemical potential
         self.picture = picture
-        self.fd = compute_sqrt_fd(mf.mo_energy, beta, mu)
-#        self.phys = False
+        self.fd = utils.compute_sqrt_fd(mf.mo_energy, beta, mu)
 
         # integrals in fixed Bogliubov basis
         fd, fd_ = self.fd
@@ -288,8 +276,7 @@ class ERIs_1e:
         self.beta = beta
         self.mu = mu # chemical potential
         self.picture = picture
-        self.fd = compute_sqrt_fd(h0, beta, mu)
-#        self.phys = False
+        self.fd = utils.compute_sqrt_fd(h0, beta, mu)
 
         # integrals in fixed Bogliubov basis
         fd, fd_ = self.fd
@@ -382,7 +369,7 @@ class ERIs_p:
         self.beta = beta
         self.mu = mu # chemical potential
         self.picture = picture
-        self.fd = compute_sqrt_fd(mf.mo_energy, beta, mu)
+        self.fd = utils.compute_sqrt_fd(mf.mo_energy, beta, mu)
         self.phys = True
         # ZT integrals in HF basis
         self.h0_, self.h1_, self.eri_ = utils.mo_ints_mol(mf, f0)[:3]

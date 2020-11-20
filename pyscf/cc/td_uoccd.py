@@ -1,108 +1,151 @@
 import numpy as np
 import scipy
-from pyscf import lib, ao2mo
+from pyscf import lib, cc
+from pyscf.cc import td_uoccd_utils as utils
 einsum = lib.einsum
 
-def init_amps(eris, mo_coeff, no):
-    noa, nob = no
-    eris.ao2mo(mo_coeff)
-    fa, fb = eris.h[0].copy(), eris.h[1].copy()
-    fa += einsum('piqi->pq',eris.eri[0][:,:noa,:,:noa])
-    fa += einsum('pIqI->pq',eris.eri[1][:,:nob,:,:nob])
-    fb += einsum('PIQI->PQ',eris.eri[2][:,:nob,:,:nob])
-    fb += einsum('iPiQ->PQ',eris.eri[1][:noa,:,:noa,:])
-    eoa = np.diag(fa[:noa,:noa])
-    eva = np.diag(fa[noa:,noa:])
-    eob = np.diag(fb[:nob,:nob])
-    evb = np.diag(fb[nob:,nob:])
-    eia = lib.direct_sum('i-a->ia', eoa, eva)
-    eIA = lib.direct_sum('I-A->IA', eob, evb)
-    eabij = lib.direct_sum('ia+jb->abij', eia, eia)
-    eaBiJ = lib.direct_sum('ia+JB->aBiJ', eia, eIA)
-    eABIJ = lib.direct_sum('IA+JB->ABIJ', eIA, eIA)
-    taa = eris.eri[0][noa:,noa:,:noa,:noa]/eabij
-    tab = eris.eri[1][noa:,nob:,:noa,:nob]/eaBiJ
-    tbb = eris.eri[2][nob:,nob:,:nob,:nob]/eABIJ
-    laa = taa.transpose(2,3,0,1).copy()
-    lab = tab.transpose(2,3,0,1).copy()
-    lbb = tbb.transpose(2,3,0,1).copy()
-    return (taa, tab, tbb), (laa, lab, lbb)
+def build_rdm1(d1):
+    doo, dvv = d1
+    doo, dOO = doo
+    dvv, dVV = dvv
+    noa, nob = doo.shape[0], dOO.shape[1]
+    nva, nvb = dvv.shape[0], dVV.shape[1]
+    d1a = np.block([[doo,np.zeros((noa,nva))],
+                    [np.zeros((nva,noa)),dvv]])
+    d1b = np.block([[dOO,np.zeros((nob,nvb))],
+                    [np.zeros((nvb,nob)),dVV]])
+    return d1a, d1b
 
-def kernel_it(mf, maxiter=1000, step=0.03, thresh=1e-8, RK4=True):
-    it = True
-    noa, nob = mf.mol.nelec
-    eris = ERIs(mf)
-    mo0 = mf.mo_coeff.copy()
-    Ua = np.eye(mf.mo_coeff[0].shape[0])
-    Ub = np.eye(mf.mo_coeff[1].shape[0])
-    mo_coeff = np.dot(mo0,Ua), np.dot(mo0,Ub)
-    (taa, tab, tbb), (laa, lab, lbb) = init_amps(eris, mo_coeff, mf.mol.nelec)
-    d1, d2 = compute_rdms((taa, tab, tbb), (laa, lab, lbb))
-    e = compute_energy(d1, d2, eris)
+def kernel(eris, t, l, tf, step, RK=4):
+    nmo = eris.mf.mol.nao_nr()
+    N = int((tf+step*0.1)/step)
+    Ca, Cb = np.eye(nmo, dtype=complex), np.eye(nmo, dtype=complex)
 
-    converged = False
-    for i in range(maxiter):
-        eris.ao2mo(mo_coeff)
-        if RK4:
-            dt, dl = update_RK4((taa, tab, tbb), (laa, lab, lbb), eris, step, it=it)
+    taa = np.array(t[0], dtype=complex)
+    tab = np.array(t[1], dtype=complex)
+    tbb = np.array(t[2], dtype=complex)
+    laa = np.array(l[0], dtype=complex)
+    lab = np.array(l[1], dtype=complex)
+    lbb = np.array(l[2], dtype=complex)
+    t, l = (taa, tab, tbb), (laa, lab, lbb)
+    d1, d2 = utils.compute_rdm12(t, l)
+    e = utils.compute_energy(d1, d2, eris, time=None)
+    print('check initial energy: {}'.format(e.real+eris.mf.energy_nuc())) 
+
+    d1a_old, d1b_old = build_rdm1(d1)
+    E = np.zeros(N+1,dtype=complex) 
+#    mu = np.zeros((N+1,3),dtype=complex)  
+    for i in range(N+1):
+        time = i * step
+        dt, dl, X, E[i], F = utils.update_RK(t, l, (Ca,Cb), eris, time, step, RK)
+#        mu[i,:] = einsum('qp,xpq->x',utils.rotate1(d1,C.T.conj()),eris.mu_) 
+        # update 
+        taa = t[0] + step * dt[0]
+        tab = t[1] + step * dt[1]
+        tbb = t[2] + step * dt[2]
+        laa = l[0] + step * dl[0]
+        lab = l[1] + step * dl[1]
+        lbb = l[2] + step * dl[2]
+        t, l = (taa, tab, tbb), (laa, lab, lbb)
+        Ca = np.dot(scipy.linalg.expm(-step*X[0]), Ca)
+        Cb = np.dot(scipy.linalg.expm(-step*X[1]), Cb)
+        d1 = utils.compute_rdm1(t, l)
+        d1a_new, d1b_new = build_rdm1(d1) 
+        d1a_new = utils.rotate1(d1a_new, Ca.T.conj())
+        d1b_new = utils.rotate1(d1b_new, Ca.T.conj())
+        if RK == 1:
+            # Ehrenfest error
+            err  = np.linalg.norm((d1a_new-d1a_old)/step-1j*F[0])
+            err += np.linalg.norm((d1b_new-d1b_old)/step-1j*F[1])
+            print('time: {:.4f}, EE(mH): {}, Xa: {}, Xb: {}, err: {}'.format(
+                  time, (E[i] - E[0]).real*1e3, 
+                  np.linalg.norm(X[0]), np.linalg.norm(X[1]), err))
         else:
-            dt, dl = update_amps((taa, tab, tbb), (laa, lab, lbb), eris, it=it)
-        d1, d2 = compute_rdms((taa, tab, tbb), (laa, lab, lbb))
-        X, _ = compute_X(d1, d2, eris, mf.mol.nelec, it)
-        taa += step * dt[0]
-        tab += step * dt[1]
-        tbb += step * dt[2]
-        laa += step * dl[0]
-        lab += step * dl[1]
-        lbb += step * dl[2]
-        e_new = compute_energy(d1, d2, eris)
-        de, e = e_new - e, e_new
-        dnormX  = np.linalg.norm(X[0]) + np.linalg.norm(X[1])
-        dnormt  = np.linalg.norm(dt[0])
-        dnormt += np.linalg.norm(dt[1])
-        dnormt += np.linalg.norm(dt[2])
-        dnorml  = np.linalg.norm(dl[0])
-        dnorml += np.linalg.norm(dl[1])
-        dnorml += np.linalg.norm(dl[2])
-        print('iter: {}, dX: {}, dt: {}, dl: {}, de: {}, energy: {}'.format(
-              i, dnormX, dnormt, dnorml, de, e))
-        if dnormX+dnormt+dnorml < thresh:
-            converged = True
-            break
-        Ua = np.dot(Ua, scipy.linalg.expm(step*X[0])) # U = U_{old,new}
-        Ub = np.dot(Ub, scipy.linalg.expm(step*X[1])) # U = U_{old,new}
-        mo_coeff = np.dot(mo0,Ua), np.dot(mo0,Ub)
-    return (taa, tab, tbb), (laa, lab, lbb), (Ua, Ub), e 
+            print('time: {:.4f}, EE(mH): {}, Xa: {}, Xb: {}'.format(
+                  time, (E[i] - E[0]).real*1e3, 
+                  np.linalg.norm(X[0]), np.linalg.norm(X[1])))
+        d1a_old = d1a_new.copy()
+        d1b_old = d1b_new.copy()
+    return (d1a_old,d1b_old), F, (Ca,Cb), X, t, l
 
-class ERIs:
-    def __init__(self, mf):
-        self.hao = mf.get_hcore().astype(complex)
-        self.eri_ao = mf.mol.intor('int2e_sph').astype(complex)
+class ERIs_mol:
+    def __init__(self, mf, z=np.zeros(3), w=0.0, td=0.0):
+        self.mf = mf
+        self.w = w
+        self.td = td
+        self.h0_, self.h1_, self.eri_ = utils.mo_ints_mol(mf, z)[:3]
+        self.picture = 'S'
 
-    def ao2mo(self, mo_coeff):
-        moa, mob = mo_coeff
-        nmoa, nmob = moa.shape[0], mob.shape[0]
-    
-        ha = einsum('uv,up,vq->pq',self.hao,moa.conj(),moa)
-        hb = einsum('uv,up,vq->pq',self.hao,mob.conj(),mob)
-        self.h = ha, hb
-    
-        eri_aa = einsum('uvxy,up,vr->prxy',self.eri_ao,moa.conj(),moa)
-        eri_aa = einsum('prxy,xq,ys->prqs',eri_aa,     moa.conj(),moa)
-        eri_aa = eri_aa.transpose(0,2,1,3)
-        eri_aa = eri_aa - eri_aa.transpose(0,1,3,2)
-        eri_bb = einsum('uvxy,up,vr->prxy',self.eri_ao,mob.conj(),mob)
-        eri_bb = einsum('prxy,xq,ys->prqs',eri_bb,     mob.conj(),mob)
-        eri_bb = eri_bb.transpose(0,2,1,3)
-        eri_bb = eri_bb - eri_bb.transpose(0,1,3,2)
-        eri_ab = einsum('uvxy,up,vr->prxy',self.eri_ao,moa.conj(),moa)
-        eri_ab = einsum('prxy,xq,ys->prqs',eri_ab,     mob.conj(),mob)
-        eri_ab = eri_ab.transpose(0,2,1,3)
-        self.eri = eri_aa.copy(), eri_ab.copy(), eri_bb.copy()
+        h0a = np.array(self.h0_[0],dtype=complex)
+        h0b = np.array(self.h0_[1],dtype=complex)
+        h1a = np.array(self.h1_[0],dtype=complex)
+        h1b = np.array(self.h1_[1],dtype=complex)
+        eriaa = np.array(self.eri_[0],dtype=complex)
+        eriab = np.array(self.eri_[1],dtype=complex)
+        eribb = np.array(self.eri_[2],dtype=complex)
+        self.h0 = h0a, h0b
+        self.h1 = h1a, h1b
+        self.eri = eriaa, eriab, eribb
 
-    fa, fb = eris.h[0].copy(), eris.h[1].copy()
-    fa += einsum('piqi->pq',eri_aa[:,:noa,:,:noa])
-    fa += einsum('pIqI->pq',eri_ab[:,:nob,:,:nob])
-    fb += einsum('PIQI->PQ',eri_bb[:,:nob,:,:nob])
-    fb += einsum('iPiQ->PQ',eri_ab[:noa,:,:noa,:])
+    def rotate(self, Ca, Cb):
+        h0a = utils.rotate1(self.h0_[0], Ca)
+        h0b = utils.rotate1(self.h0_[1], Cb)
+        h1a = utils.rotate1(self.h1_[0], Ca)
+        h1b = utils.rotate1(self.h1_[1], Cb)
+        eriaa = utils.rotate2(self.eri_[0], Ca, Ca)
+        eriab = utils.rotate2(self.eri_[1], Ca, Cb)
+        eribb = utils.rotate2(self.eri_[2], Cb, Cb)
+        self.h0 = h0a, h0b
+        self.h1 = h1a, h1b
+        self.eri = eriaa, eriab, eribb
+
+    def make_tensors(self, time=None):
+        noa, nob = self.mf.mol.nelec
+        ha, hb = self.h0[0].copy(), self.h0[1].copy()
+        if time is not None:
+            fac = utils.fac_mol(self.w, self.td, time)
+            ha += self.h1[0] * fac
+            hb += self.h1[1] * fac
+
+        self.hoo = ha[:noa,:noa].copy()
+        self.hvv = ha[noa:,noa:].copy()
+        self.hov = ha[:noa,noa:].copy()
+        self.oovv = self.eri[0][:noa,:noa,noa:,noa:].copy()
+        self.oooo = self.eri[0][:noa,:noa,:noa,:noa].copy()
+        self.vvvv = self.eri[0][noa:,noa:,noa:,noa:].copy()
+        self.ovvo = self.eri[0][:noa,noa:,noa:,:noa].copy()
+        self.ovvv = self.eri[0][:noa,noa:,noa:,noa:].copy()
+        self.ooov = self.eri[0][:noa,:noa,:noa,noa:].copy()
+
+        self.hOO = hb[:nob,:nob].copy()
+        self.hVV = hb[nob:,nob:].copy()
+        self.hOV = hb[:nob,nob:].copy()
+        self.OOVV = self.eri[2][:nob,:nob,nob:,nob:].copy()
+        self.OOOO = self.eri[2][:nob,:nob,:nob,:nob].copy()
+        self.VVVV = self.eri[2][nob:,nob:,nob:,nob:].copy()
+        self.OVVO = self.eri[2][:nob,nob:,nob:,:nob].copy()
+        self.OVVV = self.eri[2][:nob,nob:,nob:,nob:].copy()
+        self.OOOV = self.eri[2][:nob,:nob,:nob,nob:].copy()
+
+        self.oOvV = self.eri[1][:noa,:nob,noa:,nob:].copy()
+        self.oOoO = self.eri[1][:noa,:nob,:noa,:nob].copy()
+        self.vVvV = self.eri[1][noa:,nob:,noa:,nob:].copy()
+        self.oVvO = self.eri[1][:noa,nob:,noa:,:nob].copy()
+        self.oVoV = self.eri[1][:noa,nob:,:noa,nob:].copy()
+        self.vOvO = self.eri[1][noa:,:nob,noa:,:nob].copy()
+        self.oVvV = self.eri[1][:noa,nob:,noa:,nob:].copy()
+        self.vOvV = self.eri[1][noa:,:nob,noa:,nob:].copy()
+        self.oOoV = self.eri[1][:noa,:nob,:noa,nob:].copy()
+        self.oOvO = self.eri[1][:noa,:nob,noa:,:nob].copy()
+
+        self.foo, self.fvv = self.hoo.copy(), self.hvv.copy()
+        self.fOO, self.fVV = self.hOO.copy(), self.hVV.copy()
+        self.foo += einsum('piqi->pq',self.oooo)
+        self.foo += einsum('pIqI->pq',self.oOoO)
+        self.fOO += einsum('piqi->pq',self.OOOO)
+        self.fOO += einsum('IpIq->pq',self.oOoO)
+        self.fvv -= einsum('ipqi->pq',self.ovvo)
+        self.fvv += einsum('pIqI->pq',self.vOvO)
+        self.fVV -= einsum('ipqi->pq',self.OVVO)
+        self.fVV += einsum('IpIq->pq',self.oVoV)
 
