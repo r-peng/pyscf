@@ -4,26 +4,11 @@ from pyscf.cc import td_roccd_utils as utils
 import scipy
 einsum = lib.einsum
 
-def compute_phys1(d1, eris): 
-    # physical rdm1 and commutator 
-    # d1 in fixed Bogoliubov basis
-    fd, fd_ = eris.fd
-    no = len(fd)
-    d1_  = einsum('pq,p,q->pq',d1[:no,:no],fd ,fd ) 
-    d1_ += einsum('pq,p,q->pq',d1[:no,no:],fd ,fd_) 
-    d1_ += einsum('pq,p,q->pq',d1[no:,:no],fd_,fd ) 
-    d1_ += einsum('pq,p,q->pq',d1[no:,no:],fd_,fd_) 
-    return d1_
-
 def kernel(eris, t, l, tf, step, RK=4, orb=True):
     no, _, nv, _ = l.shape
     nmo = no + nv
     N = int((tf+step*0.1)/step)
     C = np.eye(nmo, dtype=complex)
-#    if not eris.phys: # for Bogoliubov rotation
-#        C = np.eye(nmo, dtype=complex)
-#    else: # for physical rotation
-#        C = np.eye(no, dtype=complex)
 
     fd, fd_ = eris.fd
     Ub = np.block([[np.diag(fd),np.diag(fd_)],[np.diag(fd_),-np.diag(fd)]])
@@ -44,7 +29,7 @@ def kernel(eris, t, l, tf, step, RK=4, orb=True):
 
     d1_old = np.block([[d1[0],np.zeros((no,nv))],
                        [np.zeros((nv,no)),d1[1]]])
-    d1_old = compute_phys1(d1_old, eris)
+    d1_old = utils.compute_phys1(d1_old, fd, fd_)
     E = np.zeros(N+1,dtype=complex) 
     rdm1 = np.zeros((N+1,no,no),dtype=complex) 
     for i in range(N+1):
@@ -65,14 +50,14 @@ def kernel(eris, t, l, tf, step, RK=4, orb=True):
 #        exp = np.einsum('pq,qp',Ab,d1_new)
 #        print('rep: ', np.linalg.norm(exp-exp_))
 #        d1_ = np.linalg.multi_dot([Ub,d1_new,Ub.T])
-        d1_new = compute_phys1(d1_new, eris)
+        d1_new = utils.compute_phys1(d1_new, fd, fd_)
 #        exp = np.einsum('pq,qp',A,d1_new)
 #        print('rep: ', np.linalg.norm(exp-exp_))
 #        print('phy: ', np.linalg.norm(d1_[:no,:no]-d1_new))
 #        print('til: ', np.linalg.norm(d1_[no:,no:]))
 #        print('cross: ', np.linalg.norm(d1_[:no,no:]),np.linalg.norm(d1_[no:,:no]))
         if RK == 1:
-            F = compute_phys1(F, eris)
+            F = utils.compute_phys1(F, fd, fd_)
             err = np.linalg.norm((d1_new-d1_old)/step-1j*F)
 #            print(abs(np.trace(F)))
             print('time: {:.4f}, EE(mH): {}, X: {}, err: {}'.format(
@@ -100,45 +85,19 @@ class ERIs_mol:
         fd, fd_ = self.fd
         no = mf.mol.nao_nr()
         h0, h1, eri = utils.mo_ints_mol(mf, f0)[:3]
-        self.h0_ = np.zeros((no*2,)*2)
-        self.h1_ = np.zeros((no*2,)*2)
-        self.eri_ = np.zeros((no*2,)*4)
-        self.h0_[:no,:no] = einsum('pq,p,q->pq',h0,fd ,fd )
-        self.h0_[no:,no:] = einsum('pq,p,q->pq',h0,fd_,fd_)
-        self.h0_[:no,no:] = einsum('pq,p,q->pq',h0,fd ,fd_)
-        self.h0_[no:,:no] = einsum('pq,p,q->pq',h0,fd_,fd)
-        self.h1_[:no,:no] = einsum('pq,p,q->pq',h1,fd ,fd )
-        self.h1_[no:,no:] = einsum('pq,p,q->pq',h1,fd_,fd_)
-        self.h1_[:no,no:] = einsum('pq,p,q->pq',h1,fd ,fd_)
-        self.h1_[no:,:no] = einsum('pq,p,q->pq',h1,fd_,fd )
-        self.eri_[:no,:no,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd ,fd )
-        self.eri_[no:,:no,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd ,fd )
-        self.eri_[:no,no:,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd ,fd )
-        self.eri_[:no,:no,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd_,fd )
-        self.eri_[:no,:no,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd ,fd_)
-        self.eri_[:no,:no,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd_,fd_)
-        self.eri_[no:,no:,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd ,fd )
-        self.eri_[:no,no:,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd_,fd )
-        self.eri_[:no,no:,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd ,fd_)
-        self.eri_[no:,:no,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd ,fd_)
-        self.eri_[no:,:no,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd_,fd )
-        self.eri_[:no,no:,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd_,fd_)
-        self.eri_[no:,:no,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd_,fd_)
-        self.eri_[no:,no:,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd ,fd_)
-        self.eri_[no:,no:,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd_,fd )
-        self.eri_[no:,no:,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd_,fd_)
+        self.h0_ = utils.make_bogoliubov1(h0, fd, fd_) 
+        self.h1_ = utils.make_bogoliubov1(h1, fd, fd_) 
+        self.eri_ = utils.make_bogoliubov2(eri, fd, fd_) 
 
         # integrals in rotating basis
         self.h0 = np.array(self.h0_, dtype=complex)
         self.h1 = np.array(self.h1_, dtype=complex)
         self.eri = np.array(self.eri_, dtype=complex)
-        h0 = h1 = mu = eri = None
+        h0 = h1 = eri = None
 
         if picture == 'I':
-            self.Roo = np.diag(mf.mo_energy)
-            self.Rvv = np.diag(mf.mo_energy)
-            self.Roo -= einsum('pq,p,q->pq',np.diag(mf.mo_energy),fd, fd ) 
-            self.Rvv -= einsum('pq,p,q->pq',np.diag(mf.mo_energy),fd_,fd_) 
+            self.Roo = utils.make_Roo(mf.mo_energy, fd )
+            self.Rvv = utils.make_Roo(mf.mo_energy, fd_)
 
     def rotate(self, C, time=None):
         self.h0 = utils.rotate1(self.h0_, C)
@@ -192,45 +151,19 @@ class ERIs_sol:
         fd, fd_ = self.fd
         no = mf.mol.nao_nr()
         h0, h1, eri = utils.mo_ints_cell(mf, f0)[:3]
-        self.h0_ = np.zeros((no*2,)*2, dtype=complex)
-        self.h1_ = np.zeros((no*2,)*2, dtype=complex)
-        self.eri_ = np.zeros((no*2,)*4, dtype=complex)
-        self.h0_[:no,:no] = einsum('pq,p,q->pq',h0,fd ,fd )
-        self.h0_[no:,no:] = einsum('pq,p,q->pq',h0,fd_,fd_)
-        self.h0_[:no,no:] = einsum('pq,p,q->pq',h0,fd ,fd_)
-        self.h0_[no:,:no] = einsum('pq,p,q->pq',h0,fd_,fd)
-        self.h1_[:no,:no] = einsum('pq,p,q->pq',h1,fd ,fd )
-        self.h1_[no:,no:] = einsum('pq,p,q->pq',h1,fd_,fd_)
-        self.h1_[:no,no:] = einsum('pq,p,q->pq',h1,fd ,fd_)
-        self.h1_[no:,:no] = einsum('pq,p,q->pq',h1,fd_,fd )
-        self.eri_[:no,:no,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd ,fd )
-        self.eri_[no:,:no,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd ,fd )
-        self.eri_[:no,no:,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd ,fd )
-        self.eri_[:no,:no,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd_,fd )
-        self.eri_[:no,:no,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd ,fd_)
-        self.eri_[:no,:no,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd_,fd_)
-        self.eri_[no:,no:,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd ,fd )
-        self.eri_[:no,no:,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd_,fd )
-        self.eri_[:no,no:,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd ,fd_)
-        self.eri_[no:,:no,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd ,fd_)
-        self.eri_[no:,:no,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd_,fd )
-        self.eri_[:no,no:,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd_,fd_)
-        self.eri_[no:,:no,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd_,fd_)
-        self.eri_[no:,no:,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd ,fd_)
-        self.eri_[no:,no:,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd_,fd )
-        self.eri_[no:,no:,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd_,fd_)
+        self.h0_ = utils.make_bogoliubov1(h0, fd, fd_) 
+        self.h1_ = utils.make_bogoliubov1(h1, fd, fd_) 
+        self.eri_ = utils.make_bogoliubov2(eri, fd, fd_) 
 
         # integrals in rotating basis
         self.h0 = np.array(self.h0_, dtype=complex)
         self.h1 = np.array(self.h1_, dtype=complex)
         self.eri = np.array(self.eri_, dtype=complex)
-        h0 = h1 = mu = eri = None
+        h0 = h1 = eri = None
 
         if picture == 'I':
-            self.Roo = np.diag(mf.mo_energy)
-            self.Rvv = np.diag(mf.mo_energy)
-            self.Roo -= einsum('pq,p,q->pq',np.diag(mf.mo_energy),fd, fd ) 
-            self.Rvv -= einsum('pq,p,q->pq',np.diag(mf.mo_energy),fd_,fd_) 
+            self.Roo = utils.make_Roo(mf.mo_energy, fd )
+            self.Rvv = utils.make_Roo(mf.mo_energy, fd_)
 
     def rotate(self, C, time=None):
         self.h0 = utils.rotate1(self.h0_, C)
@@ -283,33 +216,9 @@ class ERIs_1e:
         no = len(fd)
         h0 = np.diag(h0)
         eri = np.zeros((no,)*4)
-        self.h0_ = np.zeros((no*2,)*2)
-        self.h1_ = np.zeros((no*2,)*2)
-        self.eri_ = np.zeros((no*2,)*4)
-        self.h0_[:no,:no] = einsum('pq,p,q->pq',h0,fd ,fd )
-        self.h0_[no:,no:] = einsum('pq,p,q->pq',h0,fd_,fd_)
-        self.h0_[:no,no:] = einsum('pq,p,q->pq',h0,fd ,fd_)
-        self.h0_[no:,:no] = einsum('pq,p,q->pq',h0,fd_,fd)
-        self.h1_[:no,:no] = einsum('pq,p,q->pq',h1,fd ,fd )
-        self.h1_[no:,no:] = einsum('pq,p,q->pq',h1,fd_,fd_)
-        self.h1_[:no,no:] = einsum('pq,p,q->pq',h1,fd ,fd_)
-        self.h1_[no:,:no] = einsum('pq,p,q->pq',h1,fd_,fd )
-        self.eri_[:no,:no,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd ,fd )
-        self.eri_[no:,:no,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd ,fd )
-        self.eri_[:no,no:,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd ,fd )
-        self.eri_[:no,:no,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd_,fd )
-        self.eri_[:no,:no,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd ,fd_)
-        self.eri_[:no,:no,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd_,fd_)
-        self.eri_[no:,no:,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd ,fd )
-        self.eri_[:no,no:,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd_,fd )
-        self.eri_[:no,no:,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd ,fd_)
-        self.eri_[no:,:no,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd ,fd_)
-        self.eri_[no:,:no,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd_,fd )
-        self.eri_[:no,no:,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd_,fd_)
-        self.eri_[no:,:no,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd_,fd_)
-        self.eri_[no:,no:,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd ,fd_)
-        self.eri_[no:,no:,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd_,fd )
-        self.eri_[no:,no:,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd_,fd_)
+        self.h0_ = utils.make_bogoliubov1(h0, fd, fd_) 
+        self.h1_ = utils.make_bogoliubov1(h1, fd, fd_) 
+        self.eri_ = utils.make_bogoliubov2(eri, fd, fd_) 
 
         # integrals in rotating basis
         self.h0 = np.array(self.h0_, dtype=complex)
@@ -317,11 +226,9 @@ class ERIs_1e:
         self.eri = np.array(self.eri_, dtype=complex)
 
         if picture == 'I':
-            self.Roo = h0.copy() 
-            self.Rvv = h0.copy() 
-            self.Roo -= einsum('pq,p,q->pq',h0,fd, fd ) 
-            self.Rvv -= einsum('pq,p,q->pq',h0,fd_,fd_) 
-        h0 = h1 = mu = eri = None
+            self.Roo = utils.make_Roo(np.diag(h0), fd )
+            self.Rvv = utils.make_Roo(np.diag(h0), fd_)
+        h0 = h1 = eri = None
 
     def rotate(self, C, time=None):
         self.h0 = utils.rotate1(self.h0_, C)

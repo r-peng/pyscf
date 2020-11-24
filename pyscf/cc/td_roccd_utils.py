@@ -349,6 +349,9 @@ def fac_sol(sigma, w, td, time):
         osc = math.cos(w*dt)
         return evlp * osc
 
+def phase_hubbard(A0, sigma, w, td, time):
+    return A0*fac_sol(sigma, w, td, time)
+
 def mo_ints_mol(mf, z=np.zeros(3)): # field strength folded into z
     nmo = mf.mol.nao_nr()
     h0 = mf.get_hcore()
@@ -443,4 +446,51 @@ def compute_sqrt_fd(mo_energy, beta, mu):
     fd = np.reciprocal(fd) # n_p
     fd_ = 1.0 - fd # 1-n_p
     return np.sqrt(fd), np.sqrt(fd_)
+
+def make_bogoliubov1(h, fd, fd_):
+    no = len(fd)
+    hb = np.zeros((no*2,)*2, dtype=complex)
+    hb[:no,:no] = einsum('pq,p,q->pq',h,fd ,fd )
+    hb[no:,no:] = einsum('pq,p,q->pq',h,fd_,fd_)
+    hb[:no,no:] = einsum('pq,p,q->pq',h,fd ,fd_)
+    hb[no:,:no] = einsum('pq,p,q->pq',h,fd_,fd)
+    return hb
+
+def make_bogoliubov2(eri, fd, fd_):
+    no = len(fd)
+    erib = np.zeros((no*2,)*4, dtype=complex)
+    erib[:no,:no,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd ,fd )
+    erib[no:,:no,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd ,fd )
+    erib[:no,no:,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd ,fd )
+    erib[:no,:no,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd_,fd )
+    erib[:no,:no,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd ,fd_)
+    erib[:no,:no,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd ,fd_,fd_)
+    erib[no:,no:,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd ,fd )
+    erib[:no,no:,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd_,fd )
+    erib[:no,no:,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd ,fd_)
+    erib[no:,:no,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd ,fd_)
+    erib[no:,:no,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd_,fd )
+    erib[:no,no:,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd ,fd_,fd_,fd_)
+    erib[no:,:no,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd ,fd_,fd_)
+    erib[no:,no:,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd ,fd_)
+    erib[no:,no:,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd_,fd )
+    erib[no:,no:,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fd_,fd_,fd_,fd_)
+    return erib
+
+def make_Roo(mo_energy, fd):
+    Roo = np.diag(mo_energy)
+    Roo -= einsum('pq,p,q->pq',np.diag(mo_energy),fd, fd ) 
+#    Rvv = np.diag(mf.mo_energy)
+#    Rvv -= einsum('pq,p,q->pq',np.diag(mf.mo_energy),fd_,fd_)
+    return Roo 
+
+def compute_phys1(d1, fd, fd_): 
+    # physical rdm1 and commutator 
+    # d1 in fixed Bogoliubov basis
+    no = len(fd)
+    d1_  = einsum('pq,p,q->pq',d1[:no,:no],fd ,fd ) 
+    d1_ += einsum('pq,p,q->pq',d1[:no,no:],fd ,fd_) 
+    d1_ += einsum('pq,p,q->pq',d1[no:,:no],fd_,fd ) 
+    d1_ += einsum('pq,p,q->pq',d1[no:,no:],fd_,fd_) 
+    return d1_
 

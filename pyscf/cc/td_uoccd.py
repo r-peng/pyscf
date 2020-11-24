@@ -4,18 +4,6 @@ from pyscf import lib, cc
 from pyscf.cc import td_uoccd_utils as utils
 einsum = lib.einsum
 
-def build_rdm1(d1):
-    doo, dvv = d1
-    doo, dOO = doo
-    dvv, dVV = dvv
-    noa, nob = doo.shape[0], dOO.shape[1]
-    nva, nvb = dvv.shape[0], dVV.shape[1]
-    d1a = np.block([[doo,np.zeros((noa,nva))],
-                    [np.zeros((nva,noa)),dvv]])
-    d1b = np.block([[dOO,np.zeros((nob,nvb))],
-                    [np.zeros((nvb,nob)),dVV]])
-    return d1a, d1b
-
 def kernel(eris, t, l, tf, step, RK=4):
     nmo = eris.mf.mol.nao_nr()
     N = int((tf+step*0.1)/step)
@@ -32,7 +20,7 @@ def kernel(eris, t, l, tf, step, RK=4):
     e = utils.compute_energy(d1, d2, eris, time=None)
     print('check initial energy: {}'.format(e.real+eris.mf.energy_nuc())) 
 
-    d1a_old, d1b_old = build_rdm1(d1)
+    d1a_old, d1b_old = utils.build_rdm1(d1)
     E = np.zeros(N+1,dtype=complex) 
 #    mu = np.zeros((N+1,3),dtype=complex)  
     for i in range(N+1):
@@ -50,7 +38,7 @@ def kernel(eris, t, l, tf, step, RK=4):
         Ca = np.dot(scipy.linalg.expm(-step*X[0]), Ca)
         Cb = np.dot(scipy.linalg.expm(-step*X[1]), Cb)
         d1 = utils.compute_rdm1(t, l)
-        d1a_new, d1b_new = build_rdm1(d1) 
+        d1a_new, d1b_new = utils.build_rdm1(d1) 
         d1a_new = utils.rotate1(d1a_new, Ca.T.conj())
         d1b_new = utils.rotate1(d1b_new, Ca.T.conj())
         if RK == 1:

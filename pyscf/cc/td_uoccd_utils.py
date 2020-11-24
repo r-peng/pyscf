@@ -493,20 +493,23 @@ def compute_X(d1, d2, eris, time):
         Aovvo = Aovvo.reshape(no*nv,no*nv)
         Rvo = np.dot(np.linalg.inv(Aovvo),Bov)
         Rvo = Rvo.reshape(nv,no)
-        R = np.block([[np.zeros((no,no)),Rvo.T.conj()],
+        return np.block([[np.zeros((no,no)),Rvo.T.conj()],
                        [Rvo,np.zeros((nv,nv))]])
-        if eris.picture == 'I':
-            R += np.block([[eris.Roo,np.zeros((no,nv))],
-                           [np.zeros((nv,no)),eris.Rvv]])
-        return R
 
     doo, dvv = d1
     Aovvo = compute_Aovvo(doo[0], dvv[0])
     _, fov, fvo, _ = compute_comma(d1, d2, eris, time, full=False) 
+    noa, nva = fov.shape
     Ra = compute_R(Aovvo, fov, fvo)
     Aovvo = compute_Aovvo(doo[1], dvv[1])
     _, fov, fvo, _ = compute_commb(d1, d2, eris, time, full=False) 
+    nob, nvb = fov.shape
     Rb = compute_R(Aovvo, fov, fvo)
+    if eris.picture == 'I':
+        Ra += np.block([[eris.Roo[0],np.zeros((noa,nva))],
+                       [np.zeros((nva,noa)),eris.Rvv[0]]])
+        Rb += np.block([[eris.Roo[1],np.zeros((nob,nvb))],
+                       [np.zeros((nvb,nob)),eris.Rvv[1]]])
     return 1j*Ra, 1j*Rb
 
 def compute_energy(d1, d2, eris, time=None):
@@ -554,14 +557,8 @@ def fac_mol(w, td, time):
     return td_roccd_utils.fac_mol(w, td, time)
 def fac_sol(sigma, w, td, time):
     return td_roccd_utils.fac_sol(sigma, w, td, time)
-def compute_sqrt_fd(mo_energy, beta, mu):
-    if isinstance(mo_energy, np.ndarray):
-        fda = td_roccd_utils.compute_sqrt_fd(mo_energy, beta, mu)
-        fdb = fda[0].copy(), fda[1].copy()
-    else:
-        fda = td_roccd_utils.compute_sqrt_fd(mo_energy[0], beta, mu)
-        fdb = td_roccd_utils.compute_sqrt_fd(mo_energy[1], beta, mu)
-    return fda, fdb
+def phase_hubbard(A0, sigma, w, td, time):
+    return td_roccd_utils.phase_hubbard(A0, sigma, w, td, time)
 
 def mo_ints_mol(mf, z=np.zeros(3)): # field strength folded into z
     nmo = mf.mol.nao_nr()
@@ -665,3 +662,58 @@ def update_RK(t, l, C, eris, time, h, RK):
         dt, dl, X = (dtaa, dtab, dtbb), (dlaa, dlab, dlbb), (Xa, Xb)
         return dt, dl, X, e, (Fa, Fb)
 
+def compute_sqrt_fd(mo_energy, beta, mu):
+    if isinstance(mo_energy, np.ndarray):
+        fda = td_roccd_utils.compute_sqrt_fd(mo_energy, beta, mu)
+        fdb = fda[0].copy(), fda[1].copy()
+    else:
+        fda = td_roccd_utils.compute_sqrt_fd(mo_energy[0], beta, mu)
+        fdb = td_roccd_utils.compute_sqrt_fd(mo_energy[1], beta, mu)
+    return fda, fdb
+
+def make_bogoliubov1(h, fd, fd_):
+    return td_roccd_utils.make_bogoliubov1(h, fd, fd_)
+def make_bogoliubov2(eri, fda, fdb, fda_, fdb_):
+    no = len(fda)
+    erib = np.zeros((no*2,)*4, dtype=complex)
+    erib[:no,:no,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fda ,fdb ,fda ,fdb )
+    erib[no:,:no,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fda_,fdb ,fda ,fdb )
+    erib[:no,no:,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fda ,fdb_,fda ,fdb )
+    erib[:no,:no,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fda ,fdb ,fda_,fdb )
+    erib[:no,:no,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fda ,fdb ,fda ,fdb_)
+    erib[:no,:no,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fda ,fdb ,fda_,fdb_)
+    erib[no:,no:,:no,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fda_,fdb_,fda ,fdb )
+    erib[:no,no:,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fda ,fdb_,fda_,fdb )
+    erib[:no,no:,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fda ,fdb_,fda ,fdb_)
+    erib[no:,:no,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fda_,fdb ,fda ,fdb_)
+    erib[no:,:no,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fda_,fdb ,fda_,fdb )
+    erib[:no,no:,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fda ,fdb_,fda_,fdb_)
+    erib[no:,:no,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fda_,fdb ,fda_,fdb_)
+    erib[no:,no:,:no,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fda_,fdb_,fda ,fdb_)
+    erib[no:,no:,no:,:no] = einsum('pqrs,p,q,r,s->pqrs',eri,fda_,fdb_,fda_,fdb )
+    erib[no:,no:,no:,no:] = einsum('pqrs,p,q,r,s->pqrs',eri,fda_,fdb_,fda_,fdb_)
+    return erib
+
+def make_Roo(mo_energy, fda, fdb):
+    if isinstance(mo_energy, np.ndarray):
+        Roo = td_roccd_utils.make_Roo(mo_energy, fda)
+        ROO = Roo.copy()
+    else: 
+        Roo = td_roccd_utils.make_Roo(mo_energy[0], fda)
+        ROO = td_roccd_utils.make_Roo(mo_energy[1], fdb)
+    return Roo, ROO
+
+def build_rdm1(d1):
+    doo, dvv = d1
+    doo, dOO = doo
+    dvv, dVV = dvv
+    noa, nob = doo.shape[0], dOO.shape[1]
+    nva, nvb = dvv.shape[0], dVV.shape[1]
+    d1a = np.block([[doo,np.zeros((noa,nva))],
+                    [np.zeros((nva,noa)),dvv]])
+    d1b = np.block([[dOO,np.zeros((nob,nvb))],
+                    [np.zeros((nvb,nob)),dVV]])
+    return d1a, d1b
+
+def compute_phys1(d1, fd, fd_):
+    return td_roccd_utils.compute_phys1(d1, fd, fd_)
