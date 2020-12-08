@@ -11,15 +11,6 @@ def kernel(eris, t, l, tf, step, RK=4, orb=True):
     C = np.eye(nmo, dtype=complex)
 
     fd, fd_ = eris.fd
-    Ub = np.block([[np.diag(fd),np.diag(fd_)],[np.diag(fd_),-np.diag(fd)]])
-    A = np.zeros((no,no),dtype=complex)
-    A.real = np.random.rand(no,no)
-    A.imag = np.random.rand(no,no)
-    Ab = np.block([[A,np.zeros((no,nv))],[np.zeros((nv,no)),np.zeros((nv,nv))]])
-    Ab = np.linalg.multi_dot([Ub.T, Ab, Ub])
-    Ab = np.zeros((nmo,nmo),dtype=complex)
-    Ab.real = np.random.rand(nmo,nmo)
-    Ab.imag = np.random.rand(nmo,nmo)
 
     t = np.array(t, dtype=complex)
     l = np.array(l, dtype=complex)
@@ -40,26 +31,19 @@ def kernel(eris, t, l, tf, step, RK=4, orb=True):
         t += step * dt
         l += step * dl
         C = np.dot(scipy.linalg.expm(-step*X), C)
+#        t -= step * dt # time-reversal
+#        l -= step * dl
+#        C = np.dot(scipy.linalg.expm(step*X), C)
         # Ehrenfest error
         d1 = utils.compute_rdm1(t, l)
         d1_new = np.block([[d1[0],np.zeros((no,nv))],
                            [np.zeros((nv,no)),d1[1]]])
-#        Ab_ = utils.rotate1(Ab, C)
-#        exp_ = np.einsum('pq,qp',Ab_,d1_new)
         d1_new = utils.rotate1(d1_new, C.T.conj())
-#        exp = np.einsum('pq,qp',Ab,d1_new)
-#        print('rep: ', np.linalg.norm(exp-exp_))
-#        d1_ = np.linalg.multi_dot([Ub,d1_new,Ub.T])
         d1_new = utils.compute_phys1(d1_new, fd, fd_)
-#        exp = np.einsum('pq,qp',A,d1_new)
-#        print('rep: ', np.linalg.norm(exp-exp_))
-#        print('phy: ', np.linalg.norm(d1_[:no,:no]-d1_new))
-#        print('til: ', np.linalg.norm(d1_[no:,no:]))
-#        print('cross: ', np.linalg.norm(d1_[:no,no:]),np.linalg.norm(d1_[no:,:no]))
         if RK == 1:
             F = utils.compute_phys1(F, fd, fd_)
             err = np.linalg.norm((d1_new-d1_old)/step-1j*F)
-#            print(abs(np.trace(F)))
+#            err = np.linalg.norm((d1_new-d1_old)/step+1j*F) # time-reversal
             print('time: {:.4f}, EE(mH): {}, X: {}, err: {}'.format(
                   time, (E[i] - E[0]).real*1e3, np.linalg.norm(X), err))
         else: 
