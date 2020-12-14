@@ -1,15 +1,19 @@
 import numpy as np
 from pyscf import lib, cc
 from pyscf.cc import td_uoccd_utils as utils
-
 import scipy
 einsum = lib.einsum
 
-def kernel(eris, t, l, tf, step, RK=4):
+def _U(fd, fd_):
+    return np.block([[np.diag(fd),np.diag(fd_)],
+                     [np.diag(fd_),-np.diag(fd)]])
+
+def kernel(eris, t, l, tf, step, RK=4, every=1):
     (fda, fda_), (fdb, fdb_) = eris.fd
     nmo = len(fda)
     N = int((tf+step*0.1)/step)
     Ca, Cb = np.eye(nmo*2, dtype=complex), np.eye(nmo*2, dtype=complex)
+#    Ua, Ub = _U(fda, fda_), _U(fdb, fdb_)
 
     taa = np.array(t[0], dtype=complex)
     tab = np.array(t[1], dtype=complex)
@@ -26,8 +30,9 @@ def kernel(eris, t, l, tf, step, RK=4):
     d1a_old = utils.compute_phys1(d1a_old, fda, fda_)
     d1b_old = utils.compute_phys1(d1b_old, fdb, fdb_)
     E = np.zeros(N+1,dtype=complex) 
-    rdm1a = np.zeros((N+1,nmo,nmo),dtype=complex) 
-    rdm1b = np.zeros((N+1,nmo,nmo),dtype=complex) 
+    rdm1a = [] 
+    rdm1b = []
+    rdm2ab = [] 
 #    mu = np.zeros((N+1,3),dtype=complex)  
     for i in range(N+1):
         time = i * step
@@ -43,13 +48,31 @@ def kernel(eris, t, l, tf, step, RK=4):
         t, l = (taa, tab, tbb), (laa, lab, lbb)
         Ca = np.dot(scipy.linalg.expm(-step*X[0]), Ca)
         Cb = np.dot(scipy.linalg.expm(-step*X[1]), Cb)
-        d1 = utils.compute_rdm1(t, l)
-        d1a_new, d1b_new = utils.build_rdm1(d1) 
-        d1a_new = utils.rotate1(d1a_new, Ca.T.conj())
-        d1b_new = utils.rotate1(d1b_new, Ca.T.conj())
-        d1a_new = utils.compute_phys1(d1a_new, fda, fda_)
-        d1b_new = utils.compute_phys1(d1b_new, fdb, fdb_)
-        if RK == 1:
+        if i % every == 0: 
+            d1, d2 = utils.compute_rdm12(t, l)
+            d1a_new, d1b_new = utils.build_rdm1(d1) 
+            d2ab = utils.build_rdm2ab(d2)
+            d1a_new = utils.rotate1(d1a_new, Ca.T.conj())
+            d1b_new = utils.rotate1(d1b_new, Cb.T.conj())
+            d2ab = utils.rotate2(d2ab, Ca.T.conj(), Cb.T.conj())
+#
+#            d1a_ = utils.rotate1(d1a_new, Ua)
+#            d1b_ = utils.rotate1(d1b_new, Ub)
+#            d2ab_ = utils.rotate2(d2ab, Ua, Ub)
+#
+            d1a_new = utils.compute_phys1(d1a_new, fda, fda_)
+            d1b_new = utils.compute_phys1(d1b_new, fdb, fdb_)
+            d2ab = utils.compute_phys2(d2ab, fda, fdb, fda_, fdb_)
+            print('2*nd: ', eris._eta(d2ab)[0])
+#
+#            print(np.linalg.norm(d1a_new-d1a_[:nmo,:nmo]))
+#            print(np.linalg.norm(d1b_new-d1b_[:nmo,:nmo]))
+#            print(np.linalg.norm(d2ab-d2ab_[:nmo,:nmo,:nmo,:nmo]))
+#
+            rdm1a.append(d1a_new.copy())
+            rdm1b.append(d1b_new.copy())
+            rdm2ab.append(d2ab.copy())
+        if RK == 1 and every == 1:
             # Ehrenfest error
             Fa = utils.compute_phys1(F[0], fda, fda_)
             Fb = utils.compute_phys1(F[1], fdb, fdb_)
@@ -58,15 +81,16 @@ def kernel(eris, t, l, tf, step, RK=4):
             print('time: {:.4f}, EE(mH): {}, Xa: {}, Xb: {}, err: {}'.format(
                   time, (E[i] - E[0]).real*1e3, 
                   np.linalg.norm(X[0]), np.linalg.norm(X[1]), err))
+            d1a_old = d1a_new.copy()
+            d1b_old = d1b_new.copy()
         else:
             print('time: {:.4f}, EE(mH): {}, Xa: {}, Xb: {}'.format(
                   time, (E[i] - E[0]).real*1e3, 
                   np.linalg.norm(X[0]), np.linalg.norm(X[1])))
-        d1a_old = d1a_new.copy()
-        d1b_old = d1b_new.copy()
-        rdm1a[i,:,:] = d1a_new.copy()
-        rdm1b[i,:,:] = d1b_new.copy()
-    return (rdm1a, rdm1b), E
+    rdm1a = np.array(rdm1a, dtype=complex)
+    rdm1b = np.array(rdm1b, dtype=complex)
+    rdm2ab = np.array(rdm2ab, dtype=complex)
+    return (rdm1a, rdm1b), rdm2ab, E
 
 class ERIs_mol:
     def __init__(self, mf, f0=np.zeros(3), w=0.0, td=0.0, 
@@ -194,7 +218,7 @@ class ERIs_hubbard1D:
 
         # intgrals in site basis
         V = model.get_umatS()
-        Va = V - V.transpose(0,1,3,2)
+        Va = V - V.transpose(0,1,3,2) # should vanish
         h = model.get_tmatS()
         hu, hl = np.triu(h), np.tril(h)
 
@@ -316,3 +340,27 @@ class ERIs_hubbard1D:
             self.fVV += self.Rvv[1]
         ha = hb = None
 
+    def _eta(self, d2):
+        ua, ub = self.mo_coeff
+        d2 = utils.rotate2(d2, ua, ub)
+        nmo = self.model.L 
+        fac = np.zeros((nmo,nmo))
+        for i in range(nmo):
+            for j in range(nmo):
+                fac[i,j] = (-1)**(i+j)
+        nd = 2.0*einsum('jjjj',d2)/nmo
+        eta = 2.0*einsum('ij,iijj',fac,d2)/nmo
+        return nd, eta
+
+class ERIs_SIAM:
+    def __init__(self, model, Pa, Pb, beta=0.0, mu=0.0, picture='I'):
+        self.model = model
+        self.P = Pa, Pb
+        self.beta = beta
+        self.mu = mu # chemical potential
+        self.picture = picture
+
+        h  = model.get_tmatS()
+        h += model.get_vmatS()
+        U = model.get_umatS()
+        Ua = U - U.transpose(0,1,3,2) # should vanish

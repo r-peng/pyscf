@@ -115,18 +115,6 @@ def update_amps(t, l, eris, time):
     dtab += einsum('kaci,cBkJ->aBiJ',eris.ovvo,tab)
     dtab += einsum('aKiC,BCJK->aBiJ',     vOoV,tbb)
 
-#    tmp  = einsum('kbcj,acik->abij',rovvo,taa)
-#    tmp += einsum('bKjC,aCiK->abij',rvOoV,tab)
-#    tmp -= tmp.transpose(0,1,3,2)
-#    dtaa += tmp.copy()
-#    tmp  = einsum('KBCJ,ACIK->ABIJ',rOVVO,tbb)
-#    tmp += einsum('kBcJ,cAkI->ABIJ',roVvO,tab)
-#    tmp -= tmp.transpose(0,1,3,2)
-#    dtbb += tmp.copy()
-#    dtab += einsum('kBcJ,acik->aBiJ',roVvO,taa)
-#    dtab += einsum('KBCJ,aCiK->aBiJ',rOVVO,tab)
-#    dtab += einsum('kBiC,aCkJ->aBiJ',roVoV,tab)
-
     tmp  = einsum('jcbk,ikac->ijab',eris.ovvo+rovvo,laa)
     tmp += einsum('jCbK,iKaC->ijab',eris.oVvO+roVvO,lab)
     tmp += tmp.transpose(1,0,3,2)
@@ -143,23 +131,6 @@ def update_amps(t, l, eris, time):
     dlab -= einsum('iCkB,kJaC->iJaB',eris.oVoV-roVoV,lab)
     dlab += einsum('icak,kJcB->iJaB',eris.ovvo+rovvo,lab)
     dlab += einsum('iCaK,JKBC->iJaB',eris.oVvO+roVvO,lbb)
-
-#    tmp  = einsum('jcbk,ikac->ijab',rovvo,laa)
-#    tmp += einsum('jCbK,iKaC->ijab',roVvO,lab)
-#    tmp += tmp.transpose(1,0,3,2)
-#    tmp -= tmp.transpose(0,1,3,2)
-#    dlaa += tmp.copy()
-#    tmp  = einsum('JCBK,IKAC->IJAB',rOVVO,lbb)
-#    tmp += einsum('cJkB,kIcA->IJAB',rvOoV,lab)
-#    tmp += tmp.transpose(1,0,3,2)
-#    tmp -= tmp.transpose(0,1,3,2)
-#    dlbb += tmp.copy()
-#    dlab += einsum('cJkB,ikac->iJaB',rvOoV,laa)
-#    dlab += einsum('JCBK,iKaC->iJaB',rOVVO,lab)
-#    dlab += einsum('iCkB,kJaC->iJaB',roVoV,lab)
-#    dlab += einsum('cJaK,iKcB->iJaB',rvOvO,lab)
-#    dlab += einsum('icak,kJcB->iJaB',rovvo,lab)
-#    dlab += einsum('iCaK,JKBC->iJaB',roVvO,lbb)
 
     Foo  = 0.5 * einsum('ilcd,cdkl->ik',laa,taa)
     Foo +=       einsum('iLcD,cDkL->ik',lab,tab)
@@ -715,5 +686,44 @@ def build_rdm1(d1):
                     [np.zeros((nvb,nob)),dVV]])
     return d1a, d1b
 
+def build_rdm2ab(d2):
+    doooo, doovv, dovvo, dvvvv = d2
+    doooo, doOoO, dOOOO = doooo 
+    dvvvv, dvVvV, dVVVV = dvvvv 
+    doovv, doOvV, dOOVV = doovv  
+    dovvo, doVvO, doVoV, dvOvO, dOVVO = dovvo
+    noa, nob, nva, nvb = doOvV.shape
+    nmoa, nmob = noa + nva, nob + nvb
+    d2ab = np.zeros((nmoa,nmob,nmoa,nmob),dtype=complex)
+    d2ab[:noa,:nob,:noa,:nob] = doOoO.copy()
+    d2ab[noa:,nob:,noa:,nob:] = dvVvV.copy()
+    d2ab[:noa,:nob,noa:,nob:] = doOvV.copy()
+    d2ab[noa:,nob:,:noa,:nob] = doOvV.transpose(2,3,0,1).conj().copy()
+    d2ab[:noa,nob:,noa:,:nob] = doVvO.copy()
+    d2ab[noa:,:nob,:noa,nob:] = doVvO.transpose(2,3,0,1).conj().copy()
+    d2ab[:noa,nob:,:noa,nob:] = doVoV.copy()
+    d2ab[noa:,:nob,noa:,:nob] = dvOvO.copy()
+    return d2ab
+
 def compute_phys1(d1, fd, fd_):
     return td_roccd_utils.compute_phys1(d1, fd, fd_)
+
+def compute_phys2(d2b, fda, fdb, fda_, fdb_):
+    no = len(fda)
+    d2  = einsum('pqrs,p,q,r,s->pqrs',d2b[:no,:no,:no,:no],fda ,fdb ,fda ,fdb )
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[no:,:no,:no,:no],fda_,fdb ,fda ,fdb )
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[:no,no:,:no,:no],fda ,fdb_,fda ,fdb )
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[:no,:no,no:,:no],fda ,fdb ,fda_,fdb )
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[:no,:no,:no,no:],fda ,fdb ,fda ,fdb_)
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[:no,:no,no:,no:],fda ,fdb ,fda_,fdb_)
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[no:,no:,:no,:no],fda_,fdb_,fda ,fdb )
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[:no,no:,no:,:no],fda ,fdb_,fda_,fdb )
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[:no,no:,:no,no:],fda ,fdb_,fda ,fdb_)
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[no:,:no,:no,no:],fda_,fdb ,fda ,fdb_)
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[no:,:no,no:,:no],fda_,fdb ,fda_,fdb )
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[:no,no:,no:,no:],fda ,fdb_,fda_,fdb_)
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[no:,:no,no:,no:],fda_,fdb ,fda_,fdb_)
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[no:,no:,:no,no:],fda_,fdb_,fda ,fdb_)
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[no:,no:,no:,:no],fda_,fdb_,fda_,fdb )
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[no:,no:,no:,no:],fda_,fdb_,fda_,fdb_)
+    return d2
