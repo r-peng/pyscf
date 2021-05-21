@@ -333,10 +333,10 @@ def fac_mol(w, td, time):
     if time > td:
         return 0.0 
     else:
-#        evlp = math.sin(math.pi*time/td)**2
-#        osc = 1.0
-        evlp = 1.0
-        osc = math.sin(w*time)
+        evlp = math.sin(math.pi*time/td)**2
+        osc = 1.0
+#        evlp = 1.0
+#        osc = math.sin(w*time)
         return evlp * osc
 
 def fac_sol(sigma, w, td, time):

@@ -10,6 +10,7 @@ def _U(fd, fd_):
 
 def kernel(eris, t, l, tf, step, RK=4, every=1):
     (fda, fda_), (fdb, fdb_) = eris.fd
+    ua, ub = eris.mo_coeff
     nmo = len(fda)
     N = int((tf+step*0.1)/step)
     Ca, Cb = np.eye(nmo*2, dtype=complex), np.eye(nmo*2, dtype=complex)
@@ -23,7 +24,7 @@ def kernel(eris, t, l, tf, step, RK=4, every=1):
     lbb = np.array(l[2], dtype=complex)
     t, l = (taa, tab, tbb), (laa, lab, lbb)
     d1, d2 = utils.compute_rdm12(t, l)
-    e = utils.compute_energy(d1, d2, eris, time=None)
+#    e = utils.compute_energy(d1, d2, eris, time=None)
 #    print('check initial energy: {}'.format(e.real+eris.mf.energy_nuc())) 
 
     d1a_old, d1b_old = utils.build_rdm1(d1)
@@ -49,6 +50,7 @@ def kernel(eris, t, l, tf, step, RK=4, every=1):
         Ca = np.dot(scipy.linalg.expm(-step*X[0]), Ca)
         Cb = np.dot(scipy.linalg.expm(-step*X[1]), Cb)
         if i % every == 0: 
+#            d1 = utils.compute_rdm1(t, l)
             d1, d2 = utils.compute_rdm12(t, l)
             d1a_new, d1b_new = utils.build_rdm1(d1) 
             d2ab = utils.build_rdm2ab(d2)
@@ -62,8 +64,10 @@ def kernel(eris, t, l, tf, step, RK=4, every=1):
 #
             d1a_new = utils.compute_phys1(d1a_new, fda, fda_)
             d1b_new = utils.compute_phys1(d1b_new, fdb, fdb_)
+#            print('d1a:\n', einsum('pq,ip,jq->ij',d1a_new,ua,ua))
+#            print('d1b:\n', einsum('pq,ip,jq->ij',d1b_new,ub,ub))
             d2ab = utils.compute_phys2(d2ab, fda, fdb, fda_, fdb_)
-            print('2*nd: ', eris._eta(d2ab)[0])
+#            print('2*nd: ', eris._eta(d2ab)[0])
 #
 #            print(np.linalg.norm(d1a_new-d1a_[:nmo,:nmo]))
 #            print(np.linalg.norm(d1b_new-d1b_[:nmo,:nmo]))
@@ -203,6 +207,159 @@ class ERIs_mol:
             self.fVV += self.Rvv[1]
         ha = hb = None
 
+class ERIs_hubbard1D_:
+    def __init__(self, model, Pa, Pb, A0=0.0, sigma=1.0, w=0.0, td=0.0, 
+                 beta=0.0, mu=0.0, picture='I'):
+        self.model = model
+        self.P = Pa, Pb
+        self.A0 = A0
+        self.sigma = sigma
+        self.w = w
+        self.td = td
+        self.beta = beta
+        self.mu = mu # chemical potential
+        self.picture = picture
+        self.quick = True
+
+        # intgrals in site basis
+        V = model.get_umatS()
+#        Va = V - V.transpose(0,1,3,2) # should vanish
+        h = model.get_tmatS()
+        hu, hl = np.triu(h), np.tril(h)
+
+        # diagonalize Fock matrx in site basis
+        Fa, Fb = h.copy(), h.copy()
+#        Fa += einsum('pqrs,qs->pr',Va,Pa)
+        Fa += einsum('pqrs,qs->pr',V ,Pb)
+#        Fb += einsum('pqrs,qs->pr',Va,Pb)
+        Fb += einsum('pqrs,pr->qs',V ,Pa)
+        ea, ua = np.linalg.eigh(Fa)
+        eb, ub = np.linalg.eigh(Fb)
+        self.mo_energy = ea, eb
+        self.mo_coeff = ua, ub # t=0 mo_coeff
+        self.fd = utils.compute_sqrt_fd(self.mo_energy, beta, mu)
+
+        # integrals in fixed Bogliubov basis
+        (fda, fda_), (fdb, fdb_) = self.fd
+        hua, hub = utils.rotate1(hu, ua.T), utils.rotate1(hu, ub.T)
+        hla, hlb = utils.rotate1(hl, ua.T), utils.rotate1(hl, ub.T)
+#        eriaa = utils.rotate2(Va, ua.T.conj(), ua.T.conj())
+#        eribb = utils.rotate2(Va, ub.T.conj(), ub.T.conj())
+        eriab = utils.rotate2(V , ua.T.conj(), ub.T.conj())
+
+        hua_ = utils.make_bogoliubov1(hua, fda, fda_)
+        hub_ = utils.make_bogoliubov1(hub, fdb, fdb_)
+        hla_ = utils.make_bogoliubov1(hla, fda, fda_)
+        hlb_ = utils.make_bogoliubov1(hlb, fdb, fdb_)
+#        eriaa_ = utils.make_bogoliubov2(eriaa, fda, fda, fda_, fda_)
+        self.eriab_ = utils.make_bogoliubov2(eriab, fda, fdb, fda_, fdb_)
+#        eribb_ = utils.make_bogoliubov2(eribb, fdb, fdb, fdb_, fdb_)
+        self.hu_ = hua_, hub_
+        self.hl_ = hla_, hlb_
+#        self.eri_ = eriaa_, eriab_, eribb_
+
+        # integrals in rotating basis
+        hua = np.array(self.hu_[0],dtype=complex)
+        hub = np.array(self.hu_[1],dtype=complex)
+        hla = np.array(self.hl_[0],dtype=complex)
+        hlb = np.array(self.hl_[1],dtype=complex)
+#        eriaa = np.array(self.eri_[0],dtype=complex)
+        self.eriab = np.array(self.eriab_,dtype=complex)
+#        eribb = np.array(self.eri_[2],dtype=complex)
+#        aa = np.zeros((model.L*2,)*4)
+        self.hu = hua, hub
+        self.hl = hla, hlb
+#        self.eri = eriaa, eriab, eribb
+#        self.eri = aa, eriab, aa 
+
+        if picture == 'I':
+            self.Roo = utils.make_Roo(self.mo_energy, fda , fdb )
+            self.Rvv = utils.make_Roo(self.mo_energy, fda_, fdb_)
+
+    def rotate(self, Ca, Cb):
+        hua = utils.rotate1(self.hu_[0], Ca)
+        hub = utils.rotate1(self.hu_[1], Cb)
+        hla = utils.rotate1(self.hl_[0], Ca)
+        hlb = utils.rotate1(self.hl_[1], Cb)
+#        eriaa = utils.rotate2(self.eri_[0], Ca, Ca)
+        self.eriab = utils.rotate2(self.eriab_, Ca, Cb)
+#        eribb = utils.rotate2(self.eri_[2], Cb, Cb)
+#        aa = np.zeros((self.model.L*2,)*4)
+        self.hu = hua, hub
+        self.hl = hla, hlb
+#        self.eri = eriaa, eriab, eribb
+#        self.eri = aa, eriab, aa
+
+    def make_tensors(self, time=None):
+        noa = nob = self.model.L
+        if time is not None:
+            fac = utils.phase_hubbard(self.A0, self.sigma, self.w, self.td, time)
+        else:
+            fac = 0.0
+        ha = self.hu[0] * np.exp(1j*fac) + self.hl[0] * np.exp(-1j*fac) 
+        hb = self.hu[1] * np.exp(1j*fac) + self.hl[1] * np.exp(-1j*fac) 
+
+        self.hoo = ha[:noa,:noa].copy()
+        self.hvv = ha[noa:,noa:].copy()
+        self.hov = ha[:noa,noa:].copy()
+#        self.oovv = self.eri[0][:noa,:noa,noa:,noa:].copy()
+#        self.oooo = self.eri[0][:noa,:noa,:noa,:noa].copy()
+#        self.vvvv = self.eri[0][noa:,noa:,noa:,noa:].copy()
+#        self.ovvo = self.eri[0][:noa,noa:,noa:,:noa].copy()
+#        self.ovvv = self.eri[0][:noa,noa:,noa:,noa:].copy()
+#        self.ooov = self.eri[0][:noa,:noa,:noa,noa:].copy()
+
+        self.hOO = hb[:nob,:nob].copy()
+        self.hVV = hb[nob:,nob:].copy()
+        self.hOV = hb[:nob,nob:].copy()
+#        self.OOVV = self.eri[2][:nob,:nob,nob:,nob:].copy()
+#        self.OOOO = self.eri[2][:nob,:nob,:nob,:nob].copy()
+#        self.VVVV = self.eri[2][nob:,nob:,nob:,nob:].copy()
+#        self.OVVO = self.eri[2][:nob,nob:,nob:,:nob].copy()
+#        self.OVVV = self.eri[2][:nob,nob:,nob:,nob:].copy()
+#        self.OOOV = self.eri[2][:nob,:nob,:nob,nob:].copy()
+
+        self.oOvV = self.eriab[:noa,:nob,noa:,nob:].copy()
+        self.oOoO = self.eriab[:noa,:nob,:noa,:nob].copy()
+        self.vVvV = self.eriab[noa:,nob:,noa:,nob:].copy()
+        self.oVvO = self.eriab[:noa,nob:,noa:,:nob].copy()
+        self.oVoV = self.eriab[:noa,nob:,:noa,nob:].copy()
+        self.vOvO = self.eriab[noa:,:nob,noa:,:nob].copy()
+        self.oVvV = self.eriab[:noa,nob:,noa:,nob:].copy()
+        self.vOvV = self.eriab[noa:,:nob,noa:,nob:].copy()
+        self.oOoV = self.eriab[:noa,:nob,:noa,nob:].copy()
+        self.oOvO = self.eriab[:noa,:nob,noa:,:nob].copy()
+
+        self.foo, self.fvv = self.hoo.copy(), self.hvv.copy()
+        self.fOO, self.fVV = self.hOO.copy(), self.hVV.copy()
+#        self.foo += einsum('piqi->pq',self.oooo)
+        self.foo += einsum('pIqI->pq',self.oOoO)
+#        self.fOO += einsum('piqi->pq',self.OOOO)
+        self.fOO += einsum('IpIq->pq',self.oOoO)
+#        self.fvv -= einsum('ipqi->pq',self.ovvo)
+        self.fvv += einsum('pIqI->pq',self.vOvO)
+#        self.fVV -= einsum('ipqi->pq',self.OVVO)
+        self.fVV += einsum('IpIq->pq',self.oVoV)
+
+        if self.picture == 'I':
+            self.foo += self.Roo[0]
+            self.fOO += self.Roo[1]
+            self.fvv += self.Rvv[0]
+            self.fVV += self.Rvv[1]
+        ha = hb = None
+
+    def _eta(self, d2):
+        ua, ub = self.mo_coeff
+        d2 = utils.rotate2(d2, ua, ub)
+        nmo = self.model.L 
+        fac = np.zeros((nmo,nmo))
+        for i in range(nmo):
+            for j in range(nmo):
+                fac[i,j] = (-1)**(i+j)
+        nd = 2.0*einsum('jjjj',d2)/nmo
+        eta = 2.0*einsum('ij,iijj',fac,d2)/nmo
+        return nd, eta
+
 class ERIs_hubbard1D:
     def __init__(self, model, Pa, Pb, A0=0.0, sigma=1.0, w=0.0, td=0.0, 
                  beta=0.0, mu=0.0, picture='I'):
@@ -215,6 +372,7 @@ class ERIs_hubbard1D:
         self.beta = beta
         self.mu = mu # chemical potential
         self.picture = picture
+        self.quick = False
 
         # intgrals in site basis
         V = model.get_umatS()
@@ -353,14 +511,82 @@ class ERIs_hubbard1D:
         return nd, eta
 
 class ERIs_SIAM:
-    def __init__(self, model, Pa, Pb, beta=0.0, mu=0.0, picture='I'):
+    def __init__(self, model, Pa=None, Pb=None, mo_energy=None, mo_coeff=None, beta=0.0, mu=0.0, picture='I'):
         self.model = model
         self.P = Pa, Pb
         self.beta = beta
         self.mu = mu # chemical potential
         self.picture = picture
+        self.quick = True
+        self.L = model.ll + model.lr + 1
 
         h  = model.get_tmatS()
         h += model.get_vmatS()
-        U = model.get_umatS()
-        Ua = U - U.transpose(0,1,3,2) # should vanish
+        V = model.get_umatS()
+        if mo_coeff is None: 
+            Fa, Fb = h.copy(), h.copy()
+            Fa += einsum('pqrs,qs->pr',V ,Pb)
+            Fb += einsum('pqrs,pr->qs',V ,Pa)
+            ea, ua = np.linalg.eigh(Fa)
+            eb, ub = np.linalg.eigh(Fb)
+            mo_energy = ea, eb
+            mo_coeff  = ua, ub
+        self.mo_energy = mo_energy 
+        self.mo_coeff  = mo_coeff # t=0 mo_coeff
+        self.fd = utils.compute_sqrt_fd(mo_energy, beta, mu)
+
+        # integrals in fixed Bogliubov basis
+        (fda, fda_), (fdb, fdb_) = self.fd
+        ua, ub = mo_coeff
+        ha, hb = utils.rotate1(h, ua.T), utils.rotate1(h, ub.T)
+        eriab = utils.rotate2(V , ua.T.conj(), ub.T.conj())
+
+        self.ha_ = utils.make_bogoliubov1(ha, fda, fda_)
+        self.hb_ = utils.make_bogoliubov1(hb, fdb, fdb_)
+        self.eriab_ = utils.make_bogoliubov2(eriab, fda, fdb, fda_, fdb_)
+
+        # integrals in rotating basis
+        self.ha = np.array(self.ha_,dtype=complex)
+        self.hb = np.array(self.hb_,dtype=complex)
+        self.eriab = np.array(self.eriab_,dtype=complex)
+
+        if picture == 'I':
+            self.Roo = utils.make_Roo(self.mo_energy, fda , fdb )
+            self.Rvv = utils.make_Roo(self.mo_energy, fda_, fdb_)
+
+    def rotate(self, Ca, Cb):
+        self.ha = utils.rotate1(self.ha_, Ca)
+        self.hb = utils.rotate1(self.hb_, Cb)
+        self.eriab = utils.rotate2(self.eriab_, Ca, Cb)
+
+    def make_tensors(self, time=None):
+        noa = nob = self.L
+        self.hoo = self.ha[:noa,:noa].copy()
+        self.hvv = self.ha[noa:,noa:].copy()
+        self.hov = self.ha[:noa,noa:].copy()
+        self.hOO = self.hb[:nob,:nob].copy()
+        self.hVV = self.hb[nob:,nob:].copy()
+        self.hOV = self.hb[:nob,nob:].copy()
+        self.oOvV = self.eriab[:noa,:nob,noa:,nob:].copy()
+        self.oOoO = self.eriab[:noa,:nob,:noa,:nob].copy()
+        self.vVvV = self.eriab[noa:,nob:,noa:,nob:].copy()
+        self.oVvO = self.eriab[:noa,nob:,noa:,:nob].copy()
+        self.oVoV = self.eriab[:noa,nob:,:noa,nob:].copy()
+        self.vOvO = self.eriab[noa:,:nob,noa:,:nob].copy()
+        self.oVvV = self.eriab[:noa,nob:,noa:,nob:].copy()
+        self.vOvV = self.eriab[noa:,:nob,noa:,nob:].copy()
+        self.oOoV = self.eriab[:noa,:nob,:noa,nob:].copy()
+        self.oOvO = self.eriab[:noa,:nob,noa:,:nob].copy()
+        self.foo, self.fvv = self.hoo.copy(), self.hvv.copy()
+        self.fOO, self.fVV = self.hOO.copy(), self.hVV.copy()
+        self.foo += einsum('pIqI->pq',self.oOoO)
+        self.fOO += einsum('IpIq->pq',self.oOoO)
+        self.fvv += einsum('pIqI->pq',self.vOvO)
+        self.fVV += einsum('IpIq->pq',self.oVoV)
+
+        if self.picture == 'I':
+            self.foo += self.Roo[0]
+            self.fOO += self.Roo[1]
+            self.fvv += self.Rvv[0]
+            self.fVV += self.Rvv[1]
+

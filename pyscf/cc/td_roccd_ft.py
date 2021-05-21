@@ -4,7 +4,7 @@ from pyscf.cc import td_roccd_utils as utils
 import scipy
 einsum = lib.einsum
 
-def kernel(eris, t, l, tf, step, RK=4, orb=True):
+def kernel(eris, t, l, tf, step, RK=4, every=1,orb=True):
     no, _, nv, _ = l.shape
     nmo = no + nv
     N = int((tf+step*0.1)/step)
@@ -22,7 +22,10 @@ def kernel(eris, t, l, tf, step, RK=4, orb=True):
                        [np.zeros((nv,no)),d1[1]]])
     d1_old = utils.compute_phys1(d1_old, fd, fd_)
     E = np.zeros(N+1,dtype=complex) 
-    rdm1 = np.zeros((N+1,no,no),dtype=complex) 
+    rdm1 = []
+    rdm2 = [] 
+#    rdm1 = np.zeros((N+1,no,no),dtype=complex) 
+    thresh = 10.0
     for i in range(N+1):
         time = i * step
         dt, dl, X, E[i], F = utils.update_RK(t, l, C, eris, time, step, RK, orb) # <H_U>
@@ -34,30 +37,37 @@ def kernel(eris, t, l, tf, step, RK=4, orb=True):
 #        t -= step * dt # time-reversal
 #        l -= step * dl
 #        C = np.dot(scipy.linalg.expm(step*X), C)
-        # Ehrenfest error
-        d1 = utils.compute_rdm1(t, l)
-        d1_new = np.block([[d1[0],np.zeros((no,nv))],
-                           [np.zeros((nv,no)),d1[1]]])
-        d1_new = utils.rotate1(d1_new, C.T.conj())
-        d1_new = utils.compute_phys1(d1_new, fd, fd_)
-        if RK == 1:
+        if i % every == 0: 
+            d1 = utils.compute_rdm1(t, l)
+            d1_new = np.block([[d1[0],np.zeros((no,nv))],
+                               [np.zeros((nv,no)),d1[1]]])
+            d1_new = utils.rotate1(d1_new, C.T.conj())
+            d1_new = utils.compute_phys1(d1_new, fd, fd_)
+            rdm1.append(d1_new.copy())
+        if RK == 1 and every == 1:
+            # Ehrenfest error
             F = utils.compute_phys1(F, fd, fd_)
             err = np.linalg.norm((d1_new-d1_old)/step-1j*F)
 #            err = np.linalg.norm((d1_new-d1_old)/step+1j*F) # time-reversal
             print('time: {:.4f}, EE(mH): {}, X: {}, err: {}'.format(
                   time, (E[i] - E[0]).real*1e3, np.linalg.norm(X), err))
+            d1_old = d1_new.copy()
         else: 
             tr = 2.0*np.trace(d1_new)
             print('time: {:.4f}, EE(mH): {}, X: {}, tr: {}'.format(
                   time, (E[i] - E[0]).real*1e3, np.linalg.norm(X), tr.real))
-        d1_old = d1_new.copy()
-        rdm1[i,:,:] = d1_new.copy()
+        if abs(E[i]-E[0]).real > thresh:
+            print('propagation blows up!')
+            break
+#        rdm1[i,:,:] = d1_new.copy()
+    rdm1 = np.array(rdm1, dtype=complex)
     return rdm1, E
 
 class ERIs_mol:
-    def __init__(self, mf, f0=np.zeros(3), w=0.0, td=0.0, 
+    def __init__(self, mf, f0=np.zeros(3), sigma=1.0, w=0.0, td=0.0, 
                  beta=0.0, mu=0.0, picture='I'):
         self.mf = mf
+        self.sigma = sigma
         self.w = w
         self.td = td
         self.beta = beta
@@ -92,7 +102,7 @@ class ERIs_mol:
         no = self.mf.mol.nao_nr()
         h = self.h0.copy()
         if time is not None: 
-            h += self.h1 * utils.fac_mol(self.w, self.td, time) 
+            h += self.h1 * utils.fac_sol(self.sigma, self.w, self.td, time) 
 
         self.hoo = h[:no,:no].copy()
         self.hvv = h[no:,no:].copy()
@@ -149,7 +159,7 @@ class ERIs_sol:
             self.Roo = utils.make_Roo(mf.mo_energy, fd )
             self.Rvv = utils.make_Roo(mf.mo_energy, fd_)
 
-    def rotate(self, C, time=None):
+    def rotate(self, C):
         self.h0 = utils.rotate1(self.h0_, C)
         self.h1 = utils.rotate1(self.h1_, C)
         self.eri = utils.rotate2(self.eri_, C)
@@ -184,6 +194,70 @@ class ERIs_sol:
             self.foo += self.Roo
             self.fvv += self.Rvv
         h = None
+
+class ERIs_SIAM:
+    def __init__(self, model, P=None, mo_energy=None, mo_coeff=None, beta=0.0, mu=0.0, picture='I'):
+        self.model = model
+        self.P = P
+        self.beta = beta
+        self.mu = mu # chemical potential
+        self.picture = picture
+        self.quick = True
+        self.L = model.ll + model.lr + 1
+
+        h  = model.get_tmatS()
+        h += model.get_vmatS()
+        V = model.get_umatS()
+        if mo_coeff is None: 
+            F = h.copy()
+            F += einsum('pqrs,qs->pr',V ,P)
+            mo_energy, mo_coeff = np.linalg.eigh(F)
+        self.mo_energy = mo_energy 
+        self.mo_coeff  = mo_coeff # t=0 mo_coeff
+        self.fd = utils.compute_sqrt_fd(mo_energy, beta, mu)
+
+        # integrals in fixed Bogliubov basis
+        fd, fd_ = self.fd
+        h = utils.rotate1(h, mo_coeff.T)
+        eri = utils.rotate2(V , mo_coeff.T)
+
+        self.h_ = utils.make_bogoliubov1(h, fd, fd_)
+        self.eri_ = utils.make_bogoliubov2(eri, fd, fd_)
+
+        # integrals in rotating basis
+        self.h = np.array(self.h_,dtype=complex)
+        self.eri = np.array(self.eri_,dtype=complex)
+
+        if picture == 'I':
+            self.Roo = utils.make_Roo(self.mo_energy, fd)
+            self.Rvv = utils.make_Roo(self.mo_energy, fd_)
+
+    def rotate(self, C):
+        self.h = utils.rotate1(self.h_, C)
+        self.eri = utils.rotate2(self.eri_, C)
+
+    def make_tensors(self, time=None):
+        no = self.L
+        self.hoo = self.h[:no,:no].copy()
+        self.hvv = self.h[no:,no:].copy()
+        self.hov = self.h[:no,no:].copy()
+        self.oovv = self.eri[:no,:no,no:,no:].copy()
+        self.oooo = self.eri[:no,:no,:no,:no].copy()
+        self.vvvv = self.eri[no:,no:,no:,no:].copy()
+        self.ovvo = self.eri[:no,no:,no:,:no].copy()
+        self.ovov = self.eri[:no,no:,:no,no:].copy()
+        self.vovo = self.eri[no:,:no,no:,:no].copy()
+        self.ovvv = self.eri[:no,no:,no:,no:].copy()
+        self.vovv = self.eri[no:,:no,no:,no:].copy()
+        self.ooov = self.eri[:no,:no,:no,no:].copy()
+        self.oovo = self.eri[:no,:no,no:,:no].copy()
+        self.foo, self.fvv = self.hoo.copy(), self.hvv.copy()
+        self.foo += einsum('pIqI->pq',self.oooo)
+        self.fvv += einsum('pIqI->pq',self.vovo)
+
+        if self.picture == 'I':
+            self.foo += self.Roo
+            self.fvv += self.Rvv
 
 class ERIs_1e:
     def __init__(self, h0, h1, f0=np.zeros(3), w=0.0, td=0.0, 
