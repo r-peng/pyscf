@@ -29,7 +29,6 @@ def kernel(eris, t, l, tf, step, RK=4, every=1,orb=True):
     for i in range(N+1):
         time = i * step
         dt, dl, X, E[i], F = utils.update_RK(t, l, C, eris, time, step, RK, orb) # <H_U>
-#        mu[i,:] = einsum('qp,xpq->x',utils.rotate1(d1,C.T.conj()),eris.mu_) 
         # update 
         t += step * dt
         l += step * dl
@@ -39,11 +38,15 @@ def kernel(eris, t, l, tf, step, RK=4, every=1,orb=True):
 #        C = np.dot(scipy.linalg.expm(step*X), C)
         if i % every == 0: 
             d1 = utils.compute_rdm1(t, l)
-            d1_new = np.block([[d1[0],np.zeros((no,nv))],
-                               [np.zeros((nv,no)),d1[1]]])
+#            d1,d2 = utils.compute_rdm12(t, l)
+            d1_new = utils.build_rdm1(d1)
+#            d2_new = utils.build_rdm2(d2)
             d1_new = utils.rotate1(d1_new, C.T.conj())
+#            d2_new = utils.rotate2(d2_new, C.T.conj())
             d1_new = utils.compute_phys1(d1_new, fd, fd_)
+#            d2_new = utils.compute_phys2(d2_new, fd, fd_)
             rdm1.append(d1_new.copy())
+#            rdm2.append(d2_new.copy())
         if RK == 1 and every == 1:
             # Ehrenfest error
             F = utils.compute_phys1(F, fd, fd_)
@@ -61,7 +64,8 @@ def kernel(eris, t, l, tf, step, RK=4, every=1,orb=True):
             break
 #        rdm1[i,:,:] = d1_new.copy()
     rdm1 = np.array(rdm1, dtype=complex)
-    return rdm1, E
+#    rdm2 = np.array(rdm2, dtype=complex)
+    return rdm1, rdm2, E
 
 class ERIs_mol:
     def __init__(self, mf, f0=np.zeros(3), sigma=1.0, w=0.0, td=0.0, 

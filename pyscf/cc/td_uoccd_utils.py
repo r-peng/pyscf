@@ -742,6 +742,7 @@ def compute_X(d1, d2, eris, time):
     _, fov, fvo, _ = commb(d1, d2, eris, time, full=False) 
     nob, nvb = fov.shape
     Rb = compute_R(Aovvo, fov, fvo)
+
     if eris.picture == 'I':
         Ra += np.block([[eris.Roo[0],np.zeros((noa,nva))],
                        [np.zeros((nva,noa)),eris.Rvv[0]]])

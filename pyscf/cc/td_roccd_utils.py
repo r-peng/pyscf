@@ -484,6 +484,27 @@ def make_Roo(mo_energy, fd):
 #    Rvv -= einsum('pq,p,q->pq',np.diag(mf.mo_energy),fd_,fd_)
     return Roo 
 
+def build_rdm1(d1):
+    doo, dvv = d1
+    no, nv = doo.shape[0], dvv.shape[1]
+    d1_ = np.block([[doo,np.zeros((no,nv))],
+                    [np.zeros((nv,no)),dvv]])
+    return d1_
+def build_rdm2(d2):
+    doooo, doovv, dovvo, dovov, dvvvv = d2
+    noa, nob, nva, nvb = doovv.shape
+    nmoa, nmob = noa + nva, nob + nvb
+    d2ab = np.zeros((nmoa,nmob,nmoa,nmob),dtype=complex)
+    d2ab[:noa,:nob,:noa,:nob] = doooo.copy()
+    d2ab[noa:,nob:,noa:,nob:] = dvvvv.copy()
+    d2ab[:noa,:nob,noa:,nob:] = doovv.copy()
+    d2ab[noa:,nob:,:noa,:nob] = doovv.transpose(2,3,0,1).conj().copy()
+    d2ab[:noa,nob:,noa:,:nob] = dovvo.copy()
+    d2ab[noa:,:nob,:noa,nob:] = dovvo.transpose(2,3,0,1).conj().copy()
+    d2ab[:noa,nob:,:noa,nob:] = dovov.copy()
+    d2ab[noa:,:nob,noa:,:nob] = dovov.transpose(1,0,3,2).copy()
+    return d2ab
+
 def compute_phys1(d1, fd, fd_): 
     # physical rdm1 and commutator 
     # d1 in fixed Bogoliubov basis
@@ -494,3 +515,24 @@ def compute_phys1(d1, fd, fd_):
     d1_ += einsum('pq,p,q->pq',d1[no:,no:],fd_,fd_) 
     return d1_
 
+def compute_phys2(d2b, fd, fd_):
+    no = len(fd)
+    fda = fdb = fd.copy()
+    fda_ = fdb_ = fd_.copy()
+    d2  = einsum('pqrs,p,q,r,s->pqrs',d2b[:no,:no,:no,:no],fda ,fdb ,fda ,fdb )
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[no:,:no,:no,:no],fda_,fdb ,fda ,fdb )
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[:no,no:,:no,:no],fda ,fdb_,fda ,fdb )
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[:no,:no,no:,:no],fda ,fdb ,fda_,fdb )
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[:no,:no,:no,no:],fda ,fdb ,fda ,fdb_)
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[:no,:no,no:,no:],fda ,fdb ,fda_,fdb_)
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[no:,no:,:no,:no],fda_,fdb_,fda ,fdb )
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[:no,no:,no:,:no],fda ,fdb_,fda_,fdb )
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[:no,no:,:no,no:],fda ,fdb_,fda ,fdb_)
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[no:,:no,:no,no:],fda_,fdb ,fda ,fdb_)
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[no:,:no,no:,:no],fda_,fdb ,fda_,fdb )
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[:no,no:,no:,no:],fda ,fdb_,fda_,fdb_)
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[no:,:no,no:,no:],fda_,fdb ,fda_,fdb_)
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[no:,no:,:no,no:],fda_,fdb_,fda ,fdb_)
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[no:,no:,no:,:no],fda_,fdb_,fda_,fdb )
+    d2 += einsum('pqrs,p,q,r,s->pqrs',d2b[no:,no:,no:,no:],fda_,fdb_,fda_,fdb_)
+    return d2
