@@ -1,6 +1,5 @@
 from pyscf import lib, fci, cc
-from pyscf.cc import td_occd_slow
-from pyscf.fci import direct_spin1, cistring
+from pyscf.fci import direct_uhf, cistring
 import numpy as np
 import math
 einsum = lib.einsum
@@ -38,15 +37,37 @@ def update_RK(c, eris, step, RK=4):
         return dc
 
 def compute_energy(d1, d2, eris, time=None):
-    eris.full_h(time)
-    eri_ab = eris.eri.transpose(0,2,1,3).copy()
-    eri_aa = eri_ab - eri_ab.transpose(0,1,3,2)
-    e  = einsum('pq,qp',eris.h,d1[0])
-    e += einsum('PQ,QP',eris.h,d1[1])
-    e += 0.25 * einsum('pqrs,rspq',eri_aa,d2[0])
-    e += 0.25 * einsum('PQRS,RSPQ',eri_aa,d2[2])
-    e +=        einsum('pQrS,rSpQ',eri_ab,d2[1])
-    eri_aa = eri_ab = None
+    h1e_a, h1e_b = eris.h1e_r
+    g2e_aa, g2e_ab, g2e_bb = eris.g2e_r
+    h1e_a = np.array(h1e_a,dtype=complex)
+    h1e_b = np.array(h1e_b,dtype=complex)
+    g2e_aa = np.array(g2e_aa,dtype=complex)
+    g2e_ab = np.array(g2e_ab,dtype=complex)
+    g2e_bb = np.array(g2e_bb,dtype=complex)
+    if not eris.realH: 
+        h1e_a += 1j*eris.h1e_i[0]
+        h1e_b += 1j*eris.h1e_i[1]
+        g2e_aa += 1j*g2e.h1e_i[0]
+        g2e_ab += 1j*g2e.h1e_i[1]
+        g2e_bb += 1j*g2e.h1e_i[2]
+    d1a, d1b = d1
+    d2aa, d2ab, d2bb = d2
+    # to physicts notation
+    g2e_aa = g2e_aa.transpose(0,2,1,3)
+    g2e_ab = g2e_ab.transpose(0,2,1,3)
+    g2e_bb = g2e_bb.transpose(0,2,1,3)
+    d2aa = d2aa.transpose(0,2,1,3)
+    d2ab = d2ab.transpose(0,2,1,3)
+    d2bb = d2bb.transpose(0,2,1,3)
+    # antisymmetrize integral
+    g2e_aa -= g2e_aa.transpose(1,0,2,3)
+    g2e_bb -= g2e_bb.transpose(1,0,2,3)
+
+    e  = einsum('pq,qp',h1e_a,d1a)
+    e += einsum('PQ,QP',h1e_b,d1b)
+    e += 0.25 * einsum('pqrs,rspq',g2e_aa,d2aa)
+    e += 0.25 * einsum('PQRS,RSPQ',g2e_bb,d2bb)
+    e +=        einsum('pQrS,rSpQ',g2e_ab,d2ab)
     return e
 
 def compute_rdm(c, nao, nelec):
@@ -92,9 +113,8 @@ def kernel_it(mf, step=0.01, maxiter=1000, thresh=1e-6, RK=4):
             break
     return c, E
 
-def kernel_rt(mf, c, w, f0, td, tf, step, RK=4, mo_coeff=None):
-    eris = ERIs(mf, w, f0, td, mo_coeff)
-    c = CI(c)
+def kernel_rt(eris, fcivec, step, RK=4):
+    c = CI(fcivec)
     d1, d2 = c.compute_rdm12(c.real, c.imag, eris.nao, eris.nelec)
     e = compute_energy(d1, d2, eris, time=None)
     print('check initial energy: {}'.format(e.real+mf.energy_nuc()))
@@ -191,69 +211,66 @@ def kernel_rt(mf, c, w, f0, td, tf, step, RK=4, mo_coeff=None):
     return (E - E[0]).real, (E2-E2[0]).real, (mu - eris.nucl_dip).real
 
 class ERIs():
-    def __init__(self, mf, w=None, f0=None, td=None, mo_coeff=None):
-        mo_coeff = mf.mo_coeff if mo_coeff is None else mo_coeff
-        hao = mf.get_hcore()
-        eri_ao = mf.mol.intor('int2e_sph')
-        self.nao = mf.mol.nao_nr()
-        self.nelec = mf.mol.nelec
+    def __init__(self, h1e, g2e, mo_coeff):
+        ''' SIAM-like model Hamiltonian
+            h1e: 1-elec Hamiltonian in site basis 
+            g2e: 2-elec Hamiltonian in site basis
+                 chemists notation (pr|qs)=<pq|rs>
+            mo_coeff: moa, mob 
+        '''
+        moa, mob = mo_coeff
+        
+        h1e_a = einsum('uv,up,vq->pq',h1e,moa,moa)
+        h1e_b = einsum('uv,up,vq->pq',h1e,mob,mob)
+        g2e_aa = einsum('uvxy,up,vr->prxy',g2e,moa,moa)
+        g2e_aa = einsum('prxy,xq,ys->prqs',g2e_aa,moa,moa)
+        g2e_ab = einsum('uvxy,up,vr->prxy',g2e,moa,moa)
+        g2e_ab = einsum('prxy,xq,ys->prqs',g2e_ab,mob,mob)
+        g2e_bb = einsum('uvxy,up,vr->prxy',g2e,mob,mob)
+        g2e_bb = einsum('prxy,xq,ys->prqs',g2e_bb,mob,mob)
+
         self.mo_coeff = mo_coeff
-
-        self.h0 = einsum('uv,up,vq->pq',hao,mo_coeff,mo_coeff)
-        eri = einsum('uvxy,up,vr->prxy',eri_ao,mo_coeff,mo_coeff)
-        self.eri = einsum('prxy,xq,ys->prqs',eri,mo_coeff,mo_coeff)
-
-        if td is not None:
-            mu_ao = mf.mol.intor('int1e_r')
-            self.mu = einsum('xuv,up,vq->xpq',mu_ao,mo_coeff,mo_coeff)
-            self.h1 = einsum('xpq,x->pq',self.mu,f0)
-            charges = mf.mol.atom_charges()
-            coords  = mf.mol.atom_coords()
-            self.nucl_dip = einsum('i,ix->x', charges, coords)
-            self.E0 = np.dot(self.nucl_dip,f0)
-            self.w = w
-            self.f0 = f0
-            self.td = td
-            mu_ao = None
-        mo_coeff = hao = eri_ao = eri = None
-
-    def full_h(self, time=None):
-        self.h = self.h0.copy()
-        if time is not None:
-            self.h += self.h1 * td_occd_slow.fac(self.w, self.td, time) 
+        self.h1e_r = h1e_a, h1e_b
+        self.g2e_r = g2e_aa, g2e_ab, g2e_bb
+        self.realH = True
 
 class CI():
-    def __init__(self, c):
-        self.real = c.copy()
-        self.imag = np.zeros_like(c)
+    def __init__(self, fcivec, norb, nelec):
+        '''
+           fcivec: ground state uhf fcivec
+           norb: size of site basis
+           nelec: nea, neb
+        '''
+        self.r = fcivec.copy()
+        self.i = np.zeros_like(fcivec)
+        self.norb = norb
+        self.nelec = nelec
 
-    def compute_rdm1(self, r, i, norb, nelec):
-        rr1 = direct_spin1.make_rdm1s(self.real, norb, nelec)
-        ii1 = direct_spin1.make_rdm1s(self.imag, norb, nelec)
-        ri1 = direct_spin1.trans_rdm1s(self.real, self.imag, norb, nelec)
-        d1a = rr1[0] + ii1[0] + 1j * ri1[0] - 1j * ri1[0].T
-        d1b = rr1[1] + ii1[1] + 1j * ri1[1] - 1j * ri1[1].T
-        rr1 = ii1 = ri1 = None
+    def compute_rdm1(self):
+        rr = direct_uhf.make_rdm1s(self.r, self.norb, self.nelec)
+        ii = direct_uhf.make_rdm1s(self.i, self.norb, self.nelec)
+        ri = direct_uhf.trans_rdm1s(self.r, self.i, self.norb, self.nelec)
+        d1a = rr[0] + ii[0] + 1j*(ri[0]-ri[0].T)
+        d1b = rr[1] + ii[1] + 1j*(ri[1]-ri[1].T)
         return d1a, d1b
 
-    def compute_rdm12(self, r, i, norb, nelec):
-        # direct_spin returns: 
-        # 1pdm[p,q] = :math:`\langle q^\dagger p\rangle
-        # 2pdm[p,q,r,s] = \langle p^\dagger r^\dagger s q\rangle
-        rr1, rr2 = direct_spin1.make_rdm12s(r, norb, nelec)
-        ii1, ii2 = direct_spin1.make_rdm12s(i, norb, nelec)
-        ri1, ri2 = direct_spin1.trans_rdm12s(r, i, norb, nelec)
-        d1a = rr1[0] + ii1[0] + 1j * ri1[0] - 1j * ri1[0].T
-        d1b = rr1[1] + ii1[1] + 1j * ri1[1] - 1j * ri1[1].T
-        d2aa = rr2[0] + ii2[0] + 1j * ri2[0] - 1j * ri2[0].transpose(1,0,3,2)
-        d2ab = rr2[1] + ii2[1] + 1j * ri2[1] - 1j * ri2[2].transpose(3,2,1,0)
-        d2bb = rr2[2] + ii2[2] + 1j * ri2[3] - 1j * ri2[3].transpose(1,0,3,2)
-        # transpose so that 2pdm[q,s,p,r] = \langle p^\dagger r^\dagger s q\rangle
-        d2aa = d2aa.transpose(1,3,0,2) 
-        d2ab = d2ab.transpose(1,3,0,2)
-        d2bb = d2bb.transpose(1,3,0,2)
-        rr1 = ii1 = ri1 = None
-        rr2 = ii2 = ri2 = None
+    def compute_rdm12(self):
+        # 1pdm[q,p] = :math:`\langle p^\dagger q\rangle
+        # 2pdm[p,r,q,s] = \langle p^\dagger q^\dagger s r\rangle
+        rr1, rr2 = direct_uhf.make_rdm12s(self.r, self.norb, self.nelec)
+        ii1, ii2 = direct_uhf.make_rdm12s(self.i, self.norb, self.nelec)
+        ri1, ri2 = direct_uhf.trans_rdm12s(self.r, self.i, self.norb, self.nelec)
+        # make_rdm12s returns (d1a, d1b), (d2aa, d2ab, d2bb)
+        # trans_rdm12s returns (d1a, d1b), (d2aa, d2ab, d2ba, d2bb)
+        d1a = rr1[0] + ii1[0] + 1j*(ri1[0]-ri1[0].T)
+        d1b = rr1[1] + ii1[1] + 1j*(ri1[1]-ri1[1].T)
+        d2aa = rr2[0] + ii2[0] + 1j*(ri2[0]-ri2[0].transpose(1,0,3,2))
+        d2ab = rr2[1] + ii2[1] + 1j*(ri2[1]-ri2[2].transpose(3,2,1,0))
+        d2bb = rr2[2] + ii2[2] + 1j*(ri2[3]-ri2[3].transpose(1,0,3,2))
+        # 2pdm[r,p,s,q] = \langle p^\dagger q^\dagger s r\rangle
+        d2aa = d2aa.transpose(1,0,3,2) 
+        d2ab = d2ab.transpose(1,0,3,2)
+        d2bb = d2bb.transpose(1,0,3,2)
         return (d1a, d1b), (d2aa, d2ab, d2bb)
 
     def update_ci(self, real, imag, eris, time):
@@ -403,3 +420,60 @@ def ci_imt(nmo,nfc,t2):
                                         T[K,I] += t2[i,j,a,b]*sgn1*sgn2
     return S, T 
 
+if __name__ == '__main__':
+    from functools import reduce
+    from pyscf import gto
+    from pyscf import scf
+    from pyscf import ao2mo
+
+    mol = gto.Mole()
+    mol.verbose = 0
+    mol.output = None#"out_h2o"
+    mol.atom = [
+        ['H', ( 1.,-1.    , 0.   )],
+        ['H', ( 0.,-1.    ,-1.   )],
+        ['H', ( 1.,-0.5   ,-1.   )],
+        #['H', ( 0.,-0.5   ,-1.   )],
+        #['H', ( 0.,-0.5   ,-0.   )],
+        ['H', ( 0.,-0.    ,-1.   )],
+        ['H', ( 1.,-0.5   , 0.   )],
+        ['H', ( 0., 1.    , 1.   )],
+    ]
+
+    mol.basis = {'H': 'sto-3g'}
+    mol.charge = 1
+    mol.spin = 1
+    mol.build()
+
+    m = scf.UHF(mol)
+    ehf = m.scf()
+
+    norb = m.mo_energy[0].size
+    nea = (mol.nelectron+1) // 2
+    neb = (mol.nelectron-1) // 2
+    nelec = (nea, neb)
+    mo_a = m.mo_coeff[0]
+    mo_b = m.mo_coeff[1]
+    print(mo_a)
+    print(mo_b)
+    print(m.mo_energy[0])
+    print(m.mo_energy[1])
+    exit()
+    cis = FCISolver(mol)
+    h1e_a = reduce(numpy.dot, (mo_a.T, m.get_hcore(), mo_a))
+    h1e_b = reduce(numpy.dot, (mo_b.T, m.get_hcore(), mo_b))
+    g2e_aa = ao2mo.incore.general(m._eri, (mo_a,)*4, compact=False)
+    g2e_aa = g2e_aa.reshape(norb,norb,norb,norb)
+    g2e_ab = ao2mo.incore.general(m._eri, (mo_a,mo_a,mo_b,mo_b), compact=False)
+    g2e_ab = g2e_ab.reshape(norb,norb,norb,norb)
+    g2e_bb = ao2mo.incore.general(m._eri, (mo_b,)*4, compact=False)
+    g2e_bb = g2e_bb.reshape(norb,norb,norb,norb)
+    h1e = (h1e_a, h1e_b)
+    eri = (g2e_aa, g2e_ab, g2e_bb)
+    na = cistring.num_strings(norb, nea)
+    nb = cistring.num_strings(norb, neb)
+    numpy.random.seed(15)
+    fcivec = numpy.random.random((na,nb))
+
+    e = kernel(h1e, eri, norb, nelec)[0]
+    print(e, e - -8.65159903476)
